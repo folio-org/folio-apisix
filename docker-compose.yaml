@@ -1,0 +1,61 @@
+version: "3.8"
+
+services:
+
+  etcd:
+    image: bitnamilegacy/etcd:3.5.7
+    container_name: apisix-etcd
+    restart: always
+    volumes:
+      - etcd_data:/etcd_data
+    environment:
+      ETCD_DATA_DIR: /etcd_data
+      ETCD_ENABLE_V2: "true"
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+
+  apisix:
+    # build: .
+    image: apache/apisix:3.17.0-ubuntu
+    container_name: apisix-gateway
+    restart: always
+    volumes:
+      - ./config/config.yaml:/usr/local/apisix/conf/config.yaml
+#      - ./plugins:/opt/apisix/plugins:ro
+    environment:
+      - APISIX_LOG_LEVEL=info
+    depends_on:
+      - etcd
+    ports:
+      - "9180:9180/tcp"
+      - "9080:9080/tcp"
+      - "9091:9091/tcp"
+      - "9443:9443/tcp"
+
+#  apisix-dashboard:
+#    image: apache/apisix-dashboard:3.0.1
+#    restart: always
+#    volumes:
+#      - ./config/dashboard-conf.yaml:/usr/local/apisix-dashboard/conf/conf.yaml:ro
+#    depends_on:
+#      - etcd
+#    ports:
+#      - "9000:9000/tcp"
+
+  # Test echo service
+  echo:
+    image: alpine/socat
+    container_name: apisix-echo
+    command: |
+      -T .1 tcp-l:8080,reuseaddr,fork,crlf system:"echo 'HTTP/1.0 200 OK'; echo 'Content-Type: application/json'; echo; echo '{\"message\": \"Hello from APISIX backend\", \"headers\": \"$$(env | grep HTTP_)\"}''"
+
+volumes:
+  etcd_data:
+
+networks:
+  default:
+    name: apisix-net
