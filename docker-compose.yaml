@@ -3,7 +3,7 @@ version: "3.8"
 services:
 
   etcd:
-    image: bitnamilegacy/etcd:3.5.7
+    image: bitnamilegacy/etcd:3.5.11
     container_name: apisix-etcd
     restart: always
     volumes:
@@ -17,15 +17,17 @@ services:
     ports:
       - "2379:2379"
       - "2380:2380"
+    networks:
+      apisix-net:
 
   apisix:
     # build: .
-    image: apache/apisix:3.17.0-ubuntu
+    image: apache/apisix:${APISIX_IMAGE_TAG:-3.17.0-ubuntu}
     container_name: apisix-gateway
     restart: always
     volumes:
       - ./config/config.yaml:/usr/local/apisix/conf/config.yaml
-#      - ./plugins:/opt/apisix/plugins:ro
+      #      - ./plugins:/opt/apisix/plugins:ro
     environment:
       - APISIX_LOG_LEVEL=info
     depends_on:
@@ -35,16 +37,9 @@ services:
       - "9080:9080/tcp"
       - "9091:9091/tcp"
       - "9443:9443/tcp"
-
-#  apisix-dashboard:
-#    image: apache/apisix-dashboard:3.0.1
-#    restart: always
-#    volumes:
-#      - ./config/dashboard-conf.yaml:/usr/local/apisix-dashboard/conf/conf.yaml:ro
-#    depends_on:
-#      - etcd
-#    ports:
-#      - "9000:9000/tcp"
+      - "9092:9092/tcp"
+    networks:
+      apisix-net:
 
   # Test echo service
   echo:
@@ -52,10 +47,12 @@ services:
     container_name: apisix-echo
     command: |
       -T .1 tcp-l:8080,reuseaddr,fork,crlf system:"echo 'HTTP/1.0 200 OK'; echo 'Content-Type: application/json'; echo; echo '{\"message\": \"Hello from APISIX backend\", \"headers\": \"$$(env | grep HTTP_)\"}''"
+    networks:
+      apisix-net:
 
 volumes:
   etcd_data:
 
 networks:
-  default:
-    name: apisix-net
+  apisix-net:
+    driver: bridge
