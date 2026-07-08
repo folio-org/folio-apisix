@@ -1,9 +1,0 @@
-global_rules:
-  cors:
-    plugins:
-      cors:
-        allow_origins: "${ADC_CORS_ORIGINS}"
-        allow_methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS"
-        allow_headers: "*"
-        allow_credential: ${ADC_ALLOW_CREDENTIAL}
-        max_age: 5

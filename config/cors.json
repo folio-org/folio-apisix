@@ -1,0 +1,11 @@
+{
+  "plugins": {
+    "cors": {
+      "allow_origins_by_regex": [${CORS_ALLOW_ORIGINS}],
+      "allow_methods": "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS",
+      "allow_headers": "*",
+      "allow_credential": false,
+      "max_age": 5
+    }
+  }
+}

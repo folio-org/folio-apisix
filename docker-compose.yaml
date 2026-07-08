@@ -27,7 +27,8 @@ services:
       APISIX_ADMIN_API_PORT: ${APISIX_ADMIN_API_PORT:-9180}
       APISIX_ADMIN_KEY: ${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
       APISIX_VIEWER_KEY: ${APISIX_VIEWER_KEY:-4054f7cf07e344346cd3f287985e76a2}
-      # Set to space-separated URLs or regexes to restrict CORS origins; defaults to wildcard (*)
+      # Space-separated regex patterns for allowed CORS origins (allow_origins_by_regex).
+      # Unset or "*" means any origin (".*"), e.g. "^https://.*\.folio\.org$ ^https://app\.demo\.org$"
       CORS_ORIGINS: ${CORS_ORIGINS:-}
     depends_on:
       - etcd

@@ -9,6 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose up -d
-      - run: ./test.sh
+      - run: docker compose up -d --build
+      - run: bash test/test.sh
 
