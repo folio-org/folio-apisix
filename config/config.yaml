@@ -1,0 +1,34 @@
+apisix:
+  node_listen: ${{APISIX_NODE_LISTEN:=9080}}  # APISIX listening port
+  enable_ipv6: false
+  enable_control: true
+  control:
+    ip: "0.0.0.0"
+    port: 9092
+
+deployment:
+  config_provider: etcd
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+
+  admin:
+    admin_listen:
+      port: ${{APISIX_ADMIN_API_PORT:=9180}}
+    allow_admin:
+      - 0.0.0.0/0              
+
+    admin_key:
+      - name: "admin"
+        key: ${{APISIX_ADMIN_KEY}}
+        role: admin                 # admin: manage all configuration data
+
+      - name: "viewer"
+        key: ${{APISIX_VIEWER_KEY:=4054f7cf07e344346cd3f287985e76a2}}
+        role: viewer
+
+  etcd:
+    host:                           # it's possible to define multiple etcd hosts addresses of the same etcd cluster.
+      - "http://etcd:2379"          # multiple etcd address
+    prefix: "/apisix"               # apisix configurations prefix
+    timeout: 30                     # 30 seconds
