@@ -1,29 +1,36 @@
 # APISIX
 
+## Table of Contents
+
+- [Introduction](#introduction)
+- [Version](#version)
+- [Environment Variables](#environment-variables)
+- [Ports](#ports)
+- [CORS configuration](#cors-configuration)
+- [Declarative resources](#declarative-resources)
+- [Local development](#local-development)
+- [Tests](#tests)
+
 ## Introduction
 
-`folio-apisix` is a FOLIO-customized [Apache APISIX](https://apisix.apache.org/)
-API gateway image. It builds on the upstream `apache/apisix` image and adds:
+`folio-apisix` is a FOLIO-customized [Apache APISIX](https://apisix.apache.org/) API gateway image. It builds on the
+upstream `apache/apisix` image and adds:
 
 - a FOLIO default `config.yaml` (etcd-backed, Admin API enabled),
-- a startup routine that configures the running gateway through the Admin API
-  (CORS plus any declarative resources you ship),
-- a local `docker-compose` stack (etcd + gateway + an echo backend) and smoke
-  tests for development.
+- a startup routine that configures the running gateway through the Admin API (CORS plus any declarative resources you
+  ship),
+- a local `docker-compose` stack (etcd + gateway + an echo backend) and smoke tests for development.
 
-Configuration is applied at container start by [`entrypoint.sh`](entrypoint.sh):
-the official APISIX entrypoint runs the gateway as PID 1, and in parallel — once
-the Admin API is up — FOLIO configuration is PUT to the Admin API and verified.
-If that configuration fails, the container exits (rather than serving a
-mis-configured gateway), so a bad config surfaces as a restart/crash-loop.
+Configuration is applied at container start by [`entrypoint.sh`](entrypoint.sh): the official APISIX entrypoint runs the
+gateway as PID 1, and in parallel — once the Admin API is up — FOLIO configuration is PUT to the Admin API and verified.
+If that configuration fails, the container exits (rather than serving a mis-configured gateway), so a bad config
+surfaces as a restart/crash-loop.
 
 ## Version
 
-The major and minor version of folio-apisix matches the major and minor version
-of the apisix container it is based on.
+The major and minor version of folio-apisix matches the major and minor version of the apisix container it is based on.
 
-The patch version of folio-apisix starts at 0 and gets incremented for each
-release.
+The patch version of folio-apisix starts at 0 and gets incremented for each release.
 
 ## Environment Variables
 
@@ -47,16 +54,15 @@ release.
 
 ## CORS configuration
 
-CORS is applied as an APISIX `global_rules` entry named `cors`. The rule body
-lives in [`config/cors.json`](config/cors.json) (methods, headers, credentials,
-`max_age`); only the allowed origins come from the environment.
+CORS is applied as an APISIX `global_rules` entry named `cors`. The rule body lives in
+[`config/cors.json`](config/cors.json) (methods, headers, credentials, `max_age`); only the allowed origins come from
+the environment.
 
-`CORS_ORIGINS` is a space-separated list of **regex patterns** matched against
-the request `Origin` header (APISIX `allow_origins_by_regex`):
+`CORS_ORIGINS` is a space-separated list of **regex patterns** matched against the request `Origin` header (APISIX
+`allow_origins_by_regex`):
 
 - Unset or `*` means any origin, i.e. the `.*` pattern.
-- Each value is used as a raw regex, so a specific origin is given as an
-  anchored pattern, e.g. `^https://app\.demo\.org$`.
+- Each value is a raw regex, so a specific origin is given as an anchored pattern, e.g. `^https://app\.demo\.org$`.
 
 Examples:
 
@@ -71,18 +77,28 @@ CORS_ORIGINS='^https://app\.demo\.org$'
 CORS_ORIGINS='^https://.*\.folio\.org$ ^https://app\.demo\.org$'
 ```
 
-A matching origin is echoed back in `Access-Control-Allow-Origin`; a
-non-matching origin receives no such header. Credentials are disabled, so
-`allow_headers` may remain `*`. To change methods, headers, or `max_age`, edit
+A matching origin is echoed back in `Access-Control-Allow-Origin`; a non-matching origin receives no such header.
+Credentials are disabled, so `allow_headers` may remain `*`. To change methods, headers, or `max_age`, edit
 `config/cors.json`.
+
+> **Why all origins are regex.** The APISIX `cors` plugin ignores the exact `allow_origins` field entirely once
+> `allow_origins_by_regex` is set — the two are not combined into a union. To keep a single, predictable matching path,
+> every configured origin (including the `*` / unset default, which becomes `.*`) is expressed as an
+> `allow_origins_by_regex` pattern; `allow_origins` is not used.
 
 ## Declarative resources
 
-Any other resources are shipped as files under
-[`config/resources/`](config/resources/) as `resources/<type>/<id>.json` and are
-PUT to `/apisix/admin/<type>/<id>` at startup (idempotent). See
-[`config/resources/README.md`](config/resources/README.md). PUTs only touch the
-resources they name, so anything registered at runtime is left untouched.
+Any other resources are shipped as files under [`config/resources/`](config/resources/) as `resources/<type>/<id>.json`
+and are PUT to `/apisix/admin/<type>/<id>` at startup (idempotent). See
+[`config/resources/README.md`](config/resources/README.md). PUTs only touch the resources they name, so anything
+registered at runtime is left untouched.
+
+> **Why the Admin API and not ADC.** [ADC](https://github.com/api7/adc) (the declarative-config CLI) was evaluated for
+> applying configuration but dropped. When syncing the CORS `global_rule`, ADC intermittently reported success while
+> storing an empty `cors` plugin, leaving the gateway effectively wide open; the same payload applied with a direct
+> Admin API `PUT` was reliable every time. To keep configuration deterministic and verifiable, all configuration —
+> CORS and declarative resources alike — is applied through idempotent Admin API PUTs, and ADC is not installed in the
+> image.
 
 ## Local development
 
@@ -90,9 +106,8 @@ resources they name, so anything registered at runtime is left untouched.
 docker compose up -d --build
 ```
 
-This starts etcd, the gateway, and an echo backend on the ports listed above.
-The Admin API is reachable on `localhost:9180` (send the `X-API-KEY` header) and
-the proxy on `localhost:9080`.
+This starts etcd, the gateway, and an echo backend on the ports listed above. The Admin API is reachable on
+`localhost:9180` (send the `X-API-KEY` header) and the proxy on `localhost:9080`.
 
 Set `CORS_ORIGINS` before starting to exercise restricted CORS:
 
@@ -109,7 +124,6 @@ docker compose up -d --build
 bash test/test.sh
 ```
 
-`test/test.sh` runs every suite; each is also runnable on its own
-(`bash test/basic.sh`, `bash test/cors.sh`). `basic.sh` checks Admin API
-auth and proxy routing; `cors.sh` verifies origin matching (wildcard, single
-regex, several regex) with passing and failing origins.
+`test/test.sh` runs every suite; each is also runnable on its own (`bash test/basic.sh`, `bash test/cors.sh`).
+`basic.sh` checks Admin API auth and proxy routing; `cors.sh` verifies origin matching (wildcard, single regex, several
+regex) with passing and failing origins.
