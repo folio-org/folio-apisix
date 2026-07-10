@@ -4,6 +4,7 @@
 
 - [Introduction](#introduction)
 - [Version](#version)
+- [Base image](#base-image)
 - [Environment Variables](#environment-variables)
 - [Ports](#ports)
 - [CORS configuration](#cors-configuration)
@@ -14,7 +15,7 @@
 ## Introduction
 
 `folio-apisix` is a FOLIO-customized [Apache APISIX](https://apisix.apache.org/) API gateway image. It builds on the
-upstream `apache/apisix` image and adds:
+[Docker Hardened Image](https://docs.docker.com/dhi/) build of APISIX (`dhi.io/apisix`) and adds:
 
 - a FOLIO default `config.yaml` (etcd-backed, Admin API enabled),
 - a startup routine that configures the running gateway through the Admin API (CORS plus any declarative resources you
@@ -31,6 +32,35 @@ surfaces as a restart/crash-loop.
 The major and minor version of folio-apisix matches the major and minor version of the apisix container it is based on.
 
 The patch version of folio-apisix starts at 0 and gets incremented for each release.
+
+## Base image
+
+The image is built on [Docker Hardened Images](https://docs.docker.com/dhi/) (DHI) rather than the community
+`apache/apisix` image:
+
+- **Runtime:** `dhi.io/apisix:<version>-debian` — the minimal, security-hardened image the gateway runs in.
+- **Builder:** `dhi.io/apisix:<version>-debian-dev` — the matching companion with a shell, `apt`, and `root`.
+
+DHI runtime images are deliberately stripped down, which imposes a few constraints:
+
+- **Non-root.** The image runs as `UID 65532`; there is no `root` user, so `USER root` and root-only steps do not work.
+- **No package manager.** `apt`/`apt-get` are absent, so packages cannot be installed into the runtime image directly.
+- **No general-purpose tooling.** `curl`, `jq`, `envsubst`, `grep`, etc. are not present in the runtime image.
+- **Authenticated pulls.** `dhi.io` images require registry credentials (a Docker Hardened Images subscription).
+
+`entrypoint.sh` still needs `curl`, `jq`, and `envsubst` at runtime to configure the gateway through the Admin API.
+Since the runtime image cannot install them, the [`Dockerfile`](Dockerfile) uses a multi-stage build to bring them in:
+
+1. The `-dev` builder stage (which has `root` and `apt`) installs `curl`, `jq`, and `gettext-base`.
+2. [`docker/collect-tools.sh`](docker/collect-tools.sh) copies each tool plus its shared libraries into a staging root,
+   handling Debian usr-merge symlinks (`/lib` → `/usr/lib`) and `SONAME` symlink chains (`libcurl.so.4` → `.so.4.x`).
+3. The runtime stage copies that staging root in, making the tools available to the non-root user.
+
+To add another runtime tool, install it in the builder's `apt-get install` line and add it to the `collect-tools.sh`
+arguments — it is then copied into the runtime image together with its shared libraries.
+
+> **CI note.** Because `dhi.io` requires authentication, the CI build must be able to pull both the `-debian` and
+> `-debian-dev` tags. Configure `dhi.io` registry credentials in the pipeline, otherwise the build fails at `FROM`.
 
 ## Environment Variables
 

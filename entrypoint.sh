@@ -72,9 +72,14 @@ apply_cors() {
   [ -f "${CORS_TEMPLATE}" ] || fatal "CORS template not found: ${CORS_TEMPLATE}"
   local origins="${CORS_ORIGINS:-*}"
   [ "${origins}" = "*" ] && origins=".*"
+  # Split the space-separated patterns into an array WITHOUT pathname expansion:
+  # an unquoted expansion would let regex metacharacters (e.g. ".*") glob-match
+  # files in the working directory instead of being passed through literally.
+  local -a patterns
+  IFS=' ' read -r -a patterns <<< "${origins}"
   # JSON-encode each regex value and comma-join for the template's array.
   export CORS_ALLOW_ORIGINS
-  CORS_ALLOW_ORIGINS=$(jq -rn --args '[$ARGS.positional[] | @json] | join(", ")' ${origins})
+  CORS_ALLOW_ORIGINS=$(jq -rn --args '[$ARGS.positional[] | @json] | join(", ")' "${patterns[@]}")
   log "CORS: allow_origins_by_regex = [${CORS_ALLOW_ORIGINS}]"
   envsubst '${CORS_ALLOW_ORIGINS}' < "${CORS_TEMPLATE}" | admin_put "global_rules/cors"
 }
