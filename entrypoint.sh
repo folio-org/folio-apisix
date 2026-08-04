@@ -80,8 +80,12 @@ apply_cors() {
   # JSON-encode each regex value and comma-join for the template's array.
   export CORS_ALLOW_ORIGINS
   CORS_ALLOW_ORIGINS=$(jq -rn --args '[$ARGS.positional[] | @json] | join(", ")' "${patterns[@]}")
-  log "CORS: allow_origins_by_regex = [${CORS_ALLOW_ORIGINS}]"
-  envsubst '${CORS_ALLOW_ORIGINS}' < "${CORS_TEMPLATE}" | admin_put "global_rules/cors"
+  export CORS_ALLOW_ORIGINS_EXACT="${CORS_ALLOW_ORIGINS_EXACT:-**}"
+  export CORS_ALLOW_HEADERS="${CORS_ALLOW_HEADERS:-**}"
+  export CORS_ALLOW_CREDENTIAL="${CORS_ALLOW_CREDENTIAL:-true}"
+  log "CORS: allow_origins_by_regex=[${CORS_ALLOW_ORIGINS}] allow_origins=${CORS_ALLOW_ORIGINS_EXACT} allow_headers=${CORS_ALLOW_HEADERS} allow_credential=${CORS_ALLOW_CREDENTIAL}"
+  envsubst '${CORS_ALLOW_ORIGINS}${CORS_ALLOW_ORIGINS_EXACT}${CORS_ALLOW_HEADERS}${CORS_ALLOW_CREDENTIAL}' \
+    < "${CORS_TEMPLATE}" | admin_put "global_rules/cors"
 }
 
 # --- Static resources: resources/<type>/<id>.json -> PUT /<type>/<id> --------

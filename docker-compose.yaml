@@ -30,6 +30,13 @@ services:
       # Space-separated regex patterns for allowed CORS origins (allow_origins_by_regex).
       # Unset or "*" means any origin (".*"), e.g. "^https://.*\.folio\.org$ ^https://app\.demo\.org$"
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Exact origins for allow_origins (comma-separated or ** to allow all forcefully).
+      # ** is the default and allows credentials from any origin — see README security warning.
+      CORS_ALLOW_ORIGINS_EXACT: ${CORS_ALLOW_ORIGINS_EXACT:-**}
+      # Headers allowed in CORS requests (** = allow all forcefully, default — see README security warning).
+      CORS_ALLOW_HEADERS: ${CORS_ALLOW_HEADERS:-**}
+      # Whether to allow client credentials in CORS responses (default: true).
+      CORS_ALLOW_CREDENTIAL: ${CORS_ALLOW_CREDENTIAL:-true}
     depends_on:
       - etcd
     ports:
