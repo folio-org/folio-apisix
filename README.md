@@ -110,7 +110,7 @@ CORS_ORIGINS='^https://app\.demo\.org$'
 CORS_ORIGINS='^https://.*\.folio\.org$ ^https://app\.demo\.org$'
 ```
 
-Use `CORS_ALLOW_CREDENTIAL`, `CORS_ALLOW_ORIGINS_EXACT`, and `CORS_ALLOW_HEADERS` to control credential behaviour:
+To configure credentials and restrict origins or headers, use the following variables:
 
 ```sh
 # Disable credentials — CORS_ORIGINS regex is fully in control of access
