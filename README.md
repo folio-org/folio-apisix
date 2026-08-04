@@ -163,10 +163,10 @@ docker compose up -d --build
 This starts etcd, the gateway, and an echo backend on the ports listed above. The Admin API is reachable on
 `localhost:9180` (send the `X-API-KEY` header) and the proxy on `localhost:9080`.
 
-Set `CORS_ORIGINS` before starting to exercise restricted CORS:
+Set `CORS_ORIGINS` and disable credentials before starting to exercise restricted CORS:
 
 ```sh
-CORS_ORIGINS='^https://.*\.folio\.org$' docker compose up -d --build
+CORS_ALLOW_CREDENTIAL=false CORS_ORIGINS='^https://.*\.folio\.org$' docker compose up -d --build
 ```
 
 ## Tests
