@@ -132,7 +132,7 @@ Credentials are enabled by default (`allow_credential: true`); `allow_origins` a
 > **Limitation — `CORS_ORIGINS` only applies when credentials are disabled.**
 > The APISIX `cors` plugin treats `allow_origins_by_regex` (the field populated by `CORS_ORIGINS`) as a
 > no-credentials feature. When `CORS_ALLOW_CREDENTIAL=true` (the default), `CORS_ALLOW_ORIGINS_EXACT` is
-> used instead to control origin access.
+> used to control origin access.
 
 > **Security warning — `**` and CSRF.** Using `**` for `allow_origins` allows credentials from any origin, which
 > makes the gateway vulnerable to Cross-Site Request Forgery (CSRF). Using `**` for `allow_headers` exposes all
