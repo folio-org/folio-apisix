@@ -1,0 +1,12 @@
+{
+  "plugins": {
+    "response-rewrite": {
+      "headers": {
+        "Cache-Control": "private, no-cache, no-store, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload"
+      }
+    }
+  }
+}
