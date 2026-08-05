@@ -27,6 +27,7 @@ COPY --from=builder /staging/ /
 COPY --chown=65532:65532 config/config.yaml /usr/local/apisix/conf/config.yaml
 COPY config/cors.json /opt/apisix/folio-config/cors.json
 COPY config/resources/ /opt/apisix/folio-config/resources/
+COPY --chown=65532:65532 plugins/ /usr/local/apisix/apisix/plugins/
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
