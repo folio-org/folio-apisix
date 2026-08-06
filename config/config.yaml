@@ -39,3 +39,4 @@ plugins:
   - proxy-rewrite
   - serverless-post-function
   - auth-headers-manager
+  - version-info
