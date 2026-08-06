@@ -9,6 +9,7 @@
 - [Ports](#ports)
 - [CORS configuration](#cors-configuration)
 - [Declarative resources](#declarative-resources)
+- [Configured Plugins](#configured-plugins)
 - [Local development](#local-development)
 - [Tests](#tests)
 
@@ -154,6 +155,103 @@ registered at runtime is left untouched.
 > CORS and declarative resources alike — is applied through idempotent Admin API PUTs, and ADC is not installed in the
 > image.
 
+## Configured Plugins
+
+All plugins are applied at startup via declarative Admin API PUTs — no manual configuration is required.
+The table below lists every active plugin, where it is applied, and its purpose.
+
+| Plugin | Scope | Purpose |
+| --- | --- | --- |
+| [`cors`](#cors-plugin) | `global_rules` | CORS preflight headers |
+| [`response-rewrite`](#response-rewrite) | `global_rules` | Cache-Control and HSTS headers |
+| [`auth-headers-manager`](#auth-headers-manager) | `global_rules` | Cookie-to-header token promotion |
+| [`version-info`](#version-info) | Route `GET /version` | Version endpoint with body sanitization |
+
+---
+
+### cors plugin
+
+**Scope:** `global_rules` — applied to every request  
+**Config source:** `config/cors.json` (rendered at startup by `entrypoint.sh`)
+
+Handles browser CORS preflight and response headers. Credentials are enabled by default so
+FOLIO's cookie-based auth flow (`folioAccessToken`) works cross-origin. Allowed origins, headers,
+and the credential flag are all controlled through environment variables; see
+[CORS configuration](#cors-configuration) for full details and examples.
+
+---
+
+### response-rewrite
+
+**Scope:** `global_rules` — applied to every response  
+**Config source:** `config/resources/global_rules/response-headers.json`
+
+Injects four response headers on every proxied response, overriding any upstream value:
+
+| Header | Value |
+| --- | --- |
+| `Cache-Control` | `private, no-cache, no-store, max-age=0` |
+| `Pragma` | `no-cache` |
+| `Expires` | `0` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` |
+
+No environment variables — values are hardcoded in the JSON config file.
+
+---
+
+### auth-headers-manager
+
+**Scope:** `global_rules` — applied to every request  
+**Config source:** `config/resources/global_rules/auth-headers-manager.json`  
+**Plugin source:** `plugins/auth-headers-manager.lua`
+
+Stripes (the FOLIO frontend) stores the session token in a `folioAccessToken` browser cookie.
+Backend services require the token in an HTTP header. This plugin performs that translation:
+
+1. Resolves the effective token from `Authorization: Bearer …`, `X-Okapi-Token`, or the
+   `folioAccessToken` cookie (in that priority order). If the same token appears in two sources,
+   the values must match; a mismatch returns HTTP 404.
+2. When the token came from the cookie and `set_okapi_header: true`: clears `Authorization` and
+   sets `X-Okapi-Token` to the token value (Okapi-based deployments).
+3. When `clean_access_token_cookie: true`: strips `folioAccessToken` from the `Cookie` header
+   forwarded upstream.
+
+**Deployed configuration** (from `config/resources/global_rules/auth-headers-manager.json`):
+
+| Parameter | Value | Description |
+| --- | --- | --- |
+| `set_okapi_header` | `true` | Promote cookie token to `X-Okapi-Token`. |
+| `set_authorization_header` | `false` | Do not promote cookie token to `Authorization: Bearer`. |
+| `clean_access_token_cookie` | `true` | Strip `folioAccessToken` from the forwarded `Cookie` header. |
+
+No environment variables — configuration is hardcoded in the JSON resource file. To switch to
+Eureka-based deployments (which use `Authorization: Bearer` instead of `X-Okapi-Token`), set
+`set_okapi_header: false` and `set_authorization_header: true` in that file.
+
+---
+
+### version-info
+
+**Scope:** Route `GET /version`  
+**Config source:** `config/resources/routes/version.json`  
+**Plugin source:** `plugins/version-info.lua`
+
+Exposes a public `GET /version` endpoint. The plugin responds directly (without proxying) with
+the APISIX version as a JSON object:
+
+```json
+{ "version": "<apisix-version>" }
+```
+
+The `hostname` field is intentionally omitted to prevent leaking internal server identity.
+Security headers (`Cache-Control`, `Pragma`, `Expires`, `Strict-Transport-Security`) are set to
+the same values as the global `response-rewrite` rule. Non-GET requests to `/version` are not
+matched by this route and receive the gateway's default 404 response.
+
+No configuration knobs or environment variables.
+
+---
+
 ## Local development
 
 ```sh
@@ -179,5 +277,12 @@ bash test/test.sh
 ```
 
 `test/test.sh` runs every suite; each is also runnable on its own (`bash test/basic.sh`, `bash test/cors.sh`).
-`basic.sh` checks Admin API auth and proxy routing; `cors.sh` verifies origin matching (wildcard, single regex, several
-regex) with passing and failing origins.
+Each suite can also be run individually:
+
+| Suite | What it tests |
+| --- | --- |
+| `basic.sh` | Admin API authentication and basic proxy routing |
+| `cors.sh` | CORS origin matching (wildcard, single regex, multiple regex, credentials) |
+| `response-headers.sh` | Cache-Control, Pragma, Expires, and HSTS headers on every response |
+| `auth-headers.sh` | Cookie-to-header promotion, cookie stripping, and mismatch error cases |
+| `version.sh` | `GET /version` returns version JSON with security headers; hostname absent; POST rejected |
