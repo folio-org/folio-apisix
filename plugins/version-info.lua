@@ -13,8 +13,7 @@ function _M.check_schema(conf)
 end
 
 function _M.access(conf, ctx)
-    local ok, ver_mod = pcall(require, "apisix.core.version")
-    local ver = (ok and ver_mod.VERSION) or "unknown"
+    local ver = (core.version and core.version.VERSION) or "unknown"
 
     core.response.set_header("Content-Type",              "application/json")
     core.response.set_header("Cache-Control",             "private, no-cache, no-store, max-age=0")
