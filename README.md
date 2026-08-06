@@ -8,6 +8,8 @@
 - [Environment Variables](#environment-variables)
 - [Ports](#ports)
 - [CORS configuration](#cors-configuration)
+  - [Origin restriction and credentials — two modes](#origin-restriction-and-credentials--two-modes)
+  - [Allowed request headers](#allowed-request-headers)
 - [Declarative resources](#declarative-resources)
 - [Configured Plugins](#configured-plugins)
 - [Local development](#local-development)
@@ -89,57 +91,71 @@ arguments — it is then copied into the runtime image together with its shared 
 ## CORS configuration
 
 CORS is applied as an APISIX `global_rules` entry named `cors`. The rule body lives in
-[`config/cors.json`](config/cors.json) (methods, headers, credentials, `max_age`); only the allowed origins come from
-the environment.
+[`config/cors.json`](config/cors.json) (methods, `max_age`); origins, headers, and credentials
+are controlled via environment variables.
 
-`CORS_ORIGINS` is a space-separated list of **regex patterns** matched against the request `Origin` header (APISIX
-`allow_origins_by_regex`):
+### Origin restriction and credentials — two modes
 
-- Unset or `*` means any origin, i.e. the `.*` pattern.
-- Each value is a raw regex, so a specific origin is given as an anchored pattern, e.g. `^https://app\.demo\.org$`.
+The APISIX `cors` plugin exposes two origin-matching fields, and which one is active depends on
+whether credentials are enabled:
 
-Examples:
+| `CORS_ALLOW_CREDENTIAL` | Active origin variable | How origins are matched |
+| --- | --- | --- |
+| `true` (default) | `CORS_ALLOW_ORIGINS_EXACT` | Comma-separated exact URLs passed to `allow_origins` |
+| `false` | `CORS_ORIGINS` | Space-separated regex patterns passed to `allow_origins_by_regex` |
 
-```sh
-# any origin (default)
-CORS_ORIGINS=
+The other variable is ignored in each mode.
 
-# a single origin
-CORS_ORIGINS='^https://app\.demo\.org$'
+**Mode 1 — credentials enabled (default)**
 
-# several patterns
-CORS_ORIGINS='^https://.*\.folio\.org$ ^https://app\.demo\.org$'
-```
-
-To configure credentials and restrict origins or headers, use the following variables:
+Use `CORS_ALLOW_ORIGINS_EXACT` to list allowed origins as comma-separated exact URLs.
+The default `**` allows all origins (see security warning below).
 
 ```sh
-# Disable credentials — CORS_ORIGINS regex is fully in control of access
-CORS_ALLOW_CREDENTIAL=false CORS_ORIGINS='^https://.*\.folio\.org$' docker compose up -d --build
-
-# Enable credentials for specific origins only (comma-separated exact URLs)
+# Allow specific origins with credentials (production recommendation)
 CORS_ALLOW_CREDENTIAL=true \
   CORS_ALLOW_ORIGINS_EXACT='https://app.folio.org,https://staging.folio.org' \
   docker compose up -d --build
+```
 
-# Restrict allowed request headers instead of allowing all (** default)
+**Mode 2 — credentials disabled**
+
+Use `CORS_ORIGINS` to list allowed origins as space-separated regex patterns. Unset means `.*`
+(any origin). Each value is a raw regex.
+
+```sh
+# Single origin — anchored regex
+CORS_ALLOW_CREDENTIAL=false \
+  CORS_ORIGINS='^https://app\.demo\.org$' \
+  docker compose up -d --build
+
+# Subdomain wildcard
+CORS_ALLOW_CREDENTIAL=false \
+  CORS_ORIGINS='^https://.*\.folio\.org$' \
+  docker compose up -d --build
+
+# Multiple patterns
+CORS_ALLOW_CREDENTIAL=false \
+  CORS_ORIGINS='^https://.*\.folio\.org$ ^https://app\.demo\.org$' \
+  docker compose up -d --build
+```
+
+### Allowed request headers
+
+`CORS_ALLOW_HEADERS` is independent of the credential/origin mode. It defaults to `**`
+(all headers allowed). Restrict it to a specific list when needed:
+
+```sh
 CORS_ALLOW_HEADERS='authorization,content-type,x-okapi-token,x-okapi-tenant' \
   docker compose up -d --build
 ```
 
-Credentials are enabled by default (`allow_credential: true`); `allow_origins` and `allow_headers` default to `**`
-(forceful allow-all — see security warning below). To change methods or `max_age`, edit `config/cors.json`.
+To change allowed methods or `max_age`, edit `config/cors.json` directly.
 
-> **Limitation — `CORS_ORIGINS` only applies when credentials are disabled.**
-> The APISIX `cors` plugin treats `allow_origins_by_regex` (the field populated by `CORS_ORIGINS`) as a
-> no-credentials feature. When `CORS_ALLOW_CREDENTIAL=true` (the default), `CORS_ALLOW_ORIGINS_EXACT` is
-> used to control origin access.
-
-> **Security warning — `**` and CSRF.** Using `**` for `allow_origins` allows credentials from any origin, which
-> makes the gateway vulnerable to Cross-Site Request Forgery (CSRF). Using `**` for `allow_headers` exposes all
-> request headers to cross-origin requests, which can leak sensitive data. Before using `**` for either field,
-> ensure this aligns with your deployment's security requirements. In production, prefer explicit comma-separated
-> origin URLs via `CORS_ALLOW_ORIGINS_EXACT` and an explicit header list via `CORS_ALLOW_HEADERS`.
+> **Security warning — `**` and CSRF.** Using `**` for `allow_origins` (via
+> `CORS_ALLOW_ORIGINS_EXACT=**`) allows credentials from any origin, making the gateway
+> vulnerable to Cross-Site Request Forgery (CSRF). Using `**` for `allow_headers` exposes all
+> request headers to cross-origin requests. In production, always set explicit values for both.
 
 ## Declarative resources
 
