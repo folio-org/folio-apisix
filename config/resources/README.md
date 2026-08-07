@@ -32,7 +32,7 @@ resources/routes/example.json
 
 - PUTs only affect the resources they name; anything registered at runtime is
   left untouched. Removing a file here does not delete the resource from etcd.
-- CORS is **not** configured here — it is generated from `CORS_ORIGINS` and
-  applied by the entrypoint so it always wins.
+- CORS is **not** configured here — it is generated from the `CORS_*` environment
+  variables and applied by the entrypoint so it always wins.
 - To reference environment variables inside a file, add them to
   `FOLIO_SUBST_VARS` in `entrypoint.sh` (they are expanded with `envsubst`).

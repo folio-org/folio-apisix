@@ -228,7 +228,7 @@ Backend services require the token in an HTTP header. This plugin performs that 
    `folioAccessToken` cookie (in that priority order). If the same token appears in two sources,
    the values must match; a mismatch returns HTTP 404.
 2. When the token came from the cookie and `set_okapi_header: true`: clears `Authorization` and
-   sets `X-Okapi-Token` to the token value (Okapi-based deployments).
+   sets `X-Okapi-Token` to the token value.
 3. When `clean_access_token_cookie: true`: strips `folioAccessToken` from the `Cookie` header
    forwarded upstream.
 
