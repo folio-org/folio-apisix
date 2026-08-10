@@ -32,3 +32,11 @@ deployment:
       - "http://etcd:2379"          # multiple etcd address
     prefix: "/apisix"               # apisix configurations prefix
     timeout: 30                     # 30 seconds
+
+plugins:
+  - cors
+  - response-rewrite
+  - proxy-rewrite
+  - serverless-post-function
+  - auth-headers-manager
+  - version-info

@@ -18,7 +18,7 @@ source "${SCRIPT_DIR}/lib.sh"
 
 ROUTE="${ADMIN}/routes/smoke-cors"
 RULE="${ADMIN}/global_rules/cors"
-CORS_METHODS="GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS"
+CORS_METHODS="GET,PUT,POST,DELETE,PATCH"
 
 echo "== CORS smoke tests =="
 # CORS is applied asynchronously after the gateway is up.
@@ -40,6 +40,23 @@ set_cors() {
 acao()  { curl -s -i -H "Origin: $1" "${PROXY}/get" | grep -i '^access-control-allow-origin:' | tr -d '\r' | awk '{print $2}'; }
 allow() { local v; v="$(acao "$1")"; [ "${v}" = "$1" ] && pass "allow $1" || fail "expected allow $1 (ACAO='${v:-<none>}')"; }
 block() { local v; v="$(acao "$1")"; [ -z "${v}" ]     && pass "block $1" || fail "expected block $1 (ACAO='${v}')"; }
+
+# set_cors_exact <origin> — configure allow_origins (exact string) + allow_credential:true.
+# APISIX does not support allow_credential:true with allow_origins_by_regex.
+set_cors_exact() {
+  jq -nc --arg m "${CORS_METHODS}" --arg o "$1" \
+    '{plugins:{cors:{allow_origins:$o,allow_methods:$m,allow_headers:"**",allow_credential:true,max_age:5}}}' \
+    | curl -s -o /dev/null -X PUT "${ADMIN_HDR[@]}" "${RULE}" -d @-
+  sleep 2
+}
+
+# Access-Control-Allow-Credentials returned for an OPTIONS preflight from a given origin.
+acac()      { curl -s -i -X OPTIONS -H "Origin: $1" -H "Access-Control-Request-Method: GET" "${PROXY}/get" \
+              | grep -i '^access-control-allow-credentials:' | tr -d '\r' | awk '{print $2}'; }
+cred_ok()   { local v; v="$(acac "$1")"; [ "${v}" = "true" ] && pass "credentials $1" \
+              || fail "expected credentials $1 (ACAC='${v:-<none>}')"; }
+cred_none() { local v; v="$(acac "$1")"; [ -z "${v}" ]       && pass "no-cred $1" \
+              || fail "expected no-cred $1 (ACAC='${v}')"; }
 
 echo "0. Wildcard (.* — any origin)"
 set_cors '.*'
@@ -66,6 +83,11 @@ allow "https://svc.re.example.com"         # second pattern -> pass
 block "https://exact.example.com.evil.com" # -> fail
 block "https://svc.re.example.org"         # wrong tld -> fail
 block "https://unlisted.com"               # -> fail
+
+echo "4. Credentials (allow_credential: true, exact origin)"
+set_cors_exact 'https://good.example.org'
+cred_ok   "https://good.example.org"  # matching origin -> Access-Control-Allow-Credentials: true
+cred_none "https://bad.example.org"   # non-matching origin -> header absent
 
 # Restore the wildcard default and clean up.
 set_cors '.*'

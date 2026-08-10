@@ -1,0 +1,7 @@
+{
+  "uri": "/version",
+  "methods": ["GET"],
+  "plugins": {
+    "version-info": {}
+  }
+}

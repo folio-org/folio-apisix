@@ -11,7 +11,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SUITES=(basic cors)
+SUITES=(basic cors response-headers auth-headers version)
 failed=0
 
 for suite in "${SUITES[@]}"; do
