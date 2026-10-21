@@ -98,7 +98,7 @@ class TranslateExpressionTest(unittest.TestCase):
                 mr.kong_expression_to_apisix_match(bad)
 
 
-class TranslateServiceTest(unittest.TestCase):
+class KongServiceToApisixServiceTest(unittest.TestCase):
     def test_service_payload_mirrors_apisix_integration_service(self):
         p = mr.kong_service_to_apisix_service(service())
         self.assertEqual({
@@ -139,7 +139,7 @@ class TranslateServiceTest(unittest.TestCase):
             mr.kong_service_to_apisix_service(service(name="bad name"))
 
 
-class TranslateRouteTest(unittest.TestCase):
+class KongRouteToApisixRouteTest(unittest.TestCase):
     def test_static_route_payload_mirrors_apisix_integration_route(self):
         p = mr.kong_route_to_apisix_route(route(f'(http.path == "/users" && http.method == "GET" && {TENANT_ANY})'), service())
         self.assertEqual({
