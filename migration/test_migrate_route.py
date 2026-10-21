@@ -207,6 +207,20 @@ class SampleDataTest(unittest.TestCase):
         actual["service_id"] = mr.apisix_service_id(self.kong_service)
         self.assertEqual(self.expected_route, actual)
 
+    def test_migration_creates_apisix_route_with_kong_route_name_as_id_and_name(self):
+        apisix = MigratorTest.FakeApisix()
+        report = mr.Migrator(MigratorTest.FakeKong([self.kong_service], [self.kong_route]), apisix).run()
+        self.assertFalse(report.has_failures)
+
+        route_id = self.kong_route["name"]  # the sha1 hash folio-integration-apisix uses as route id and name
+        self.assertIn(("routes", route_id), apisix.puts)  # PUT /apisix/admin/routes/<route id>
+        self.assertNotIn(("routes", self.kong_route["id"]), apisix.puts)  # not keyed by the Kong uuid
+        created = apisix.store[("routes", route_id)]
+        self.assertEqual(route_id, created["id"])
+        self.assertEqual(route_id, created["name"])
+        self.assertEqual(self.expected_route["id"], created["id"])
+        self.assertEqual(self.expected_route["name"], created["name"])
+
     def test_service_equals_existing_apisix_service_with_kong_retries_and_timeouts(self):
         expected = json.loads(json.dumps(self.expected_service))
         k = self.kong_service
