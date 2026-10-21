@@ -1,0 +1,24 @@
+{
+    "list": [
+        {
+            "value": {
+                "id": "mod-configuration-5.14.0-SNAPSHOT.2030",
+                "update_time": 1792574218,
+                "name": "mod-configuration-5.14.0-SNAPSHOT.2030",
+                "upstream": {
+                    "scheme": "http",
+                    "pass_host": "pass",
+                    "type": "roundrobin",
+                    "nodes": {
+                        "sc-configuration:8081": 1
+                    }
+                },
+                "create_time": 1792574218
+            },
+            "key": "/apisix/services/mod-configuration-5.14.0-SNAPSHOT.2030",
+            "createdIndex": 72,
+            "modifiedIndex": 72
+        }
+    ],
+    "total": 1
+}

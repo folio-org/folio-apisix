@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Migrate Kong services and routes to Apache APISIX.
 
-Reads from the Kong Admin API and writes to the APISIX Admin API (idempotent
-PUTs keyed by the Kong entity id). Order: services -> routes.
+Reads from the Kong Admin API and writes to the APISIX Admin API (idempotent PUTs). Order: services -> routes.
+Entities are shaped exactly like the ones folio-integration-apisix creates, so the library can manage them
+afterwards: service id = Kong service name (module id; sha1 when longer than 64 chars), route id = Kong route
+name (sha1 of the route name), routes carry `module` / `interface` labels.
 Plugins, consumers and Kong upstreams are intentionally out of scope.
 
 Configuration (flags; the environment variables are only defaults):
@@ -15,6 +17,7 @@ Exit codes: 0 success, 1 at least one entity failed, 2 fatal (config/connectivit
 Only the Python standard library is used.
 """
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +34,12 @@ HTTP_TIMEOUT = 30
 KINDS = ("services", "routes")
 DEFAULT_SKIP_ROUTES = "version,CORS"
 SERVICE_PROTOCOLS = ("http", "https")
+MAX_ID_LENGTH = 64
+DEFAULT_TIMEOUT_SECONDS = 60.0
+PLATFORM_SCOPE_TAG = "application-scope:platform"
+TENANT_FIELD = "http.headers.x_okapi_tenant"
+_ID_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_LABEL_VALUE_RE = re.compile(r"^\S{1,256}$")
 
 
 class TranslationError(Exception):
@@ -116,8 +125,9 @@ class ApisixClient(ApiClient):
 
 # One condition: <field> <op> <string>, where the string is "..." or a raw r#"..."#.
 _CONDITION_RE = re.compile(
-    r'\s*(http\.[A-Za-z0-9_.\-]+)\s*(==|!=|~)\s*(?:r(#*)"(.*?)"\3|"((?:[^"\\]|\\.)*)")\s*')
+    r'\s*([A-Za-z][A-Za-z0-9_.\-]*)\s*(==|!=|~)\s*(?:r(#*)"(.*?)"\3|"((?:[^"\\]|\\.)*)")')
 _OPERATORS = {"==": "==", "!=": "~=", "~": "~~"}
+_REGEX_META = frozenset("([{\\.*+?|$)")
 
 
 def _display(entity):
@@ -136,30 +146,135 @@ def _map_field(field):
     raise TranslationError(f"unsupported field '{field}'")
 
 
-def translate_expression(expression):
-    """Kong route expression -> APISIX `vars`.
+class _ExpressionParser:
+    """Kong expression -> list of clauses; clauses are AND-ed, a clause is a list of OR-ed conditions.
 
-    Supports `&&`-joined conditions (optionally wrapped in one pair of parentheses) using ==, != and ~.
-    Anything else raises TranslationError, so a route is never created with a looser match than the original.
+    A condition is (field, operator, value). Only `&&` of conditions and parenthesised `||` groups of single
+    conditions are accepted (that is all folio-integration-kong produces); anything else is rejected.
     """
-    expr = expression.strip()
-    wrapped = expr.startswith("(")
-    pos = 1 if wrapped else 0
-    variables = []
-    while True:
-        m = _CONDITION_RE.match(expr, pos)
+
+    def __init__(self, text):
+        self.text, self.pos = text, 0
+
+    def parse(self):
+        clauses = self._or()
+        self._skip_ws()
+        if self.pos != len(self.text):
+            self._fail()
+        return clauses
+
+    def _fail(self):
+        raise TranslationError(f"unsupported expression near {self.text[self.pos:self.pos + 40]!r}")
+
+    def _skip_ws(self):
+        while self.pos < len(self.text) and self.text[self.pos].isspace():
+            self.pos += 1
+
+    def _eat(self, token):
+        self._skip_ws()
+        if self.text.startswith(token, self.pos):
+            self.pos += len(token)
+            return True
+        return False
+
+    def _or(self):
+        alternatives = [self._and()]
+        while self._eat("||"):
+            alternatives.append(self._and())
+        if len(alternatives) == 1:
+            return alternatives[0]
+        group = []
+        for alternative in alternatives:
+            if len(alternative) != 1:  # `a && b || c` has no faithful APISIX form
+                raise TranslationError("unsupported expression: '&&' mixed with '||' outside parentheses")
+            group.extend(alternative[0])
+        return [group]
+
+    def _and(self):
+        clauses = self._term()
+        while self._eat("&&"):
+            clauses = clauses + self._term()
+        return clauses
+
+    def _term(self):
+        if self._eat("("):
+            clauses = self._or()
+            if not self._eat(")"):
+                self._fail()
+            return clauses
+        return [[self._condition()]]
+
+    def _condition(self):
+        self._skip_ws()
+        m = _CONDITION_RE.match(self.text, self.pos)
         if not m:
-            raise TranslationError(f"unsupported expression near {expr[pos:pos + 40]!r}")
+            self._fail()
         field, op, _, raw, quoted = m.groups()
-        value = raw if raw is not None else re.sub(r'\\(["\\])', r"\1", quoted)
-        variables.append([_map_field(field), _OPERATORS[op], value])
-        pos = m.end()
-        if not expr.startswith("&&", pos):
-            break
-        pos += 2
-    if expr[pos:] != (")" if wrapped else ""):
-        raise TranslationError(f"unsupported expression near {expr[pos:pos + 40]!r}")
-    return variables
+        self.pos = m.end()
+        return field, op, raw if raw is not None else re.sub(r'\\(["\\])', r"\1", quoted)
+
+
+def regex_to_uri(regex):
+    """Longest literal prefix of an anchored path regex as a prefix-wildcard `uri` (`/*` when none).
+
+    Mirrors ApisixRouteFactory.buildUri: the regex kept in `vars` narrows what the wildcard matches.
+    """
+    if not regex.startswith("^") or "|" in regex:
+        return "/*"
+    body = regex[1:]
+    end = next((i for i, ch in enumerate(body) if ch in _REGEX_META), len(body))
+    prefix = body[:end]
+    if end < len(body) and body[end] in "*+?{":
+        prefix = prefix[:-1]  # the quantifier applies to the last literal character
+    return prefix + "*" if prefix.startswith("/") else "/*"
+
+
+def translate_expression(expression):
+    """Kong route expression -> {"uri", "methods", "vars"} in the shape ApisixRouteFactory produces.
+
+    `http.path == X` -> exact `uri`; `http.path ~ R` -> prefix-wildcard `uri` + `["uri","~~",R]`;
+    `http.method == M` (or an `||` group of them) -> `methods`; `||` groups of `==` on one field -> `in`
+    (the tenant list ApisixRouteTenantService manages). Anything else raises TranslationError, so a route is
+    never created with a looser match than the original.
+    """
+    uri, methods, variables = None, None, []
+    for clause in _ExpressionParser(expression.strip()).parse():
+        field, op, value = clause[0]
+        if len(clause) > 1:
+            if any(c[0] != field or c[1] != "==" for c in clause):
+                raise TranslationError("unsupported '||' group: only '==' alternatives on a single field")
+            values = list(dict.fromkeys(c[2] for c in clause))
+            if field == "http.method" and methods is None:
+                methods = values
+            else:
+                variables.append([_map_field(field), "in", values])
+        elif field == "http.path" and op == "==" and uri is None and value.startswith("/") and "*" not in value:
+            uri = value
+        elif field == "http.path" and op == "~" and uri is None:
+            uri = regex_to_uri(value)
+            variables.append(["uri", _OPERATORS[op], value])
+        elif field == "http.method" and op == "==" and methods is None:
+            methods = [value]
+        elif field == TENANT_FIELD and op == "==":
+            variables.append([_map_field(field), "in", [value]])
+        else:
+            variables.append([_map_field(field), _OPERATORS[op], value])
+    return {"uri": uri or "/*", "methods": methods, "vars": variables}
+
+
+def _checked_id(value, what):
+    if not _ID_RE.match(value):
+        raise TranslationError(f"{what} '{value}' is not a valid APISIX id (1-64 chars of [a-zA-Z0-9_.-])")
+    return value
+
+
+def apisix_service_id(service):
+    """Same rule as ApisixGatewayService.serviceIdOf: the module id, or its sha1 when longer than 64 chars."""
+    name = service.get("name")
+    if not name:
+        return _checked_id(service["id"], "service id")
+    return _checked_id(name if len(name) <= MAX_ID_LENGTH else hashlib.sha1(name.encode("utf-8")).hexdigest(),
+                       "service name")
 
 
 def translate_service(service):
@@ -168,29 +283,56 @@ def translate_service(service):
         raise TranslationError(f"unsupported protocol '{protocol}'")
     if not service.get("host"):
         raise TranslationError("service has no host")
-    if service.get("path") not in (None, "", "/"):
-        raise TranslationError(f"service path prefix '{service['path']}' is not supported")
     port = service.get("port") or (443 if protocol == "https" else 80)
     upstream = {"type": "roundrobin", "scheme": protocol,
-                "pass_host": "node",  # Kong's default: send the upstream host, not the client's
+                "pass_host": "pass",  # as folio-integration-apisix: the client's Host header is forwarded
                 "nodes": {f"{service['host']}:{port}": 1}}
     if service.get("retries") is not None:
         upstream["retries"] = service["retries"]
-    timeout = {dst: service[src] / 1000.0
-               for src, dst in (("connect_timeout", "connect"), ("write_timeout", "send"), ("read_timeout", "read"))
-               if service.get(src) is not None}
-    if timeout:
-        upstream["timeout"] = timeout
-    return {"id": service["id"], "name": _display(service), "upstream": upstream}
+    timeouts = {dst: service.get(src) for src, dst in
+                (("connect_timeout", "connect"), ("write_timeout", "send"), ("read_timeout", "read"))}
+    if any(v is not None for v in timeouts.values()):
+        # APISIX requires all three fields once `timeout` is present
+        upstream["timeout"] = {k: DEFAULT_TIMEOUT_SECONDS if v is None else v / 1000.0 for k, v in timeouts.items()}
+    payload = {"id": apisix_service_id(service), "name": _display(service), "upstream": upstream}
+    path = service.get("path")
+    if path not in (None, "", "/"):
+        # APISIX nodes cannot carry a path; prefix it with a service-level proxy-rewrite
+        prefix = path[:-1] if path.endswith("/") else path
+        payload["plugins"] = {"proxy-rewrite": {"regex_uri": ["^(.*)", prefix + "$1"]}}
+    return payload
 
 
-def translate_route(route):
+def route_labels(route, service):
+    tags = [t for t in route.get("tags") or [] if t != PLATFORM_SCOPE_TAG]
+    module = (service or {}).get("name") or (tags[0] if tags else None)
+    interface = next((t for t in tags if t != module), None)
+    labels = {k: v for k, v in (("module", module), ("interface", interface)) if v}
+    if PLATFORM_SCOPE_TAG in (route.get("tags") or []):
+        labels["application-scope"] = "platform"
+    for key, value in labels.items():
+        if not _LABEL_VALUE_RE.match(value):
+            raise TranslationError(f"label '{key}' value {value!r} is not valid in APISIX")
+    return labels
+
+
+def translate_route(route, service=None):
     if not route.get("expression"):
         raise TranslationError("only expression routes are supported")
-    payload = {"id": route["id"], "name": _display(route), "uris": ["/*"],
-               "vars": translate_expression(route["expression"])}
+    if not route.get("name"):
+        raise TranslationError("route has no name (the name is the APISIX route id used by folio-integration-apisix)")
+    parsed = translate_expression(route["expression"])
+    route_id = _checked_id(route["name"], "route name")
+    payload = {"id": route_id, "name": route_id, "uri": parsed["uri"], "status": 1}
     if isinstance(route.get("priority"), int):
         payload["priority"] = route["priority"]
+    if parsed["methods"]:
+        payload["methods"] = parsed["methods"]
+    if parsed["vars"]:
+        payload["vars"] = parsed["vars"]
+    labels = route_labels(route, service)
+    if labels:
+        payload["labels"] = labels
     return payload
 
 
@@ -298,8 +440,11 @@ class Migrator:
             raise TranslationError("route has no service")
         if service_id in self.failed["services"]:
             raise TranslationError(f"dependency failed: service '{self._service_name(service_id)}' could not be migrated")
-        payload = translate_route(route)
-        payload["service_id"] = service_id
+        service = self.services_by_id.get(service_id)
+        if service is None:
+            raise TranslationError(f"service {service_id} was not returned by Kong")
+        payload = translate_route(route, service)
+        payload["service_id"] = apisix_service_id(service)
         return payload
 
     def _service_name(self, service_id):
@@ -315,20 +460,21 @@ class Migrator:
             self._emit(kind, entity, "error", reason=str(e))
 
     def _apply(self, kind, entity, payload):
-        existing = self.apisix.get(kind, entity["id"])
+        existing = self.apisix.get(kind, payload["id"])
         changed = None if existing is None else diff_paths(payload, existing)
         action = "create" if existing is None else "update" if changed else "unchanged"
         LOG.debug("%s '%s': %s", kind, _display(entity), action)
         if self.dry_run:
-            self._emit(kind, entity, action, changed=changed)
+            self._emit(kind, entity, action, apisix_id=payload["id"], changed=changed)
         elif action != "unchanged":
-            self.apisix.put(kind, entity["id"], payload)
+            self.apisix.put(kind, payload["id"], payload)
         self.report.record(kind, {"create": "migrated", "update": "updated", "unchanged": "skipped"}[action])
 
-    def _emit(self, kind, entity, action, **extra):
+    def _emit(self, kind, entity, action, apisix_id=None, **extra):
         if not self.dry_run:
             return
-        record = {"kind": kind, "id": entity.get("id"), "name": _display(entity), "action": action}
+        record = {"kind": kind, "id": apisix_id or entity.get("id"), "kong_id": entity.get("id"),
+                  "name": _display(entity), "action": action}
         if kind == "routes":
             record["service"] = self._service_name((entity.get("service") or {}).get("id"))
         record.update({k: v for k, v in extra.items() if v is not None})

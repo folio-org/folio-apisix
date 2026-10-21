@@ -1,0 +1,39 @@
+{
+    "list": [
+        {
+            "value": {
+                "id": "ee5f4fa36b89e930c5cf74c7d275ec4396f45d43",
+                "priority": 0,
+                "service_id": "mod-configuration-5.14.0-SNAPSHOT.2030",
+                "methods": [
+                    "GET"
+                ],
+                "update_time": 1792574219,
+                "status": 1,
+                "vars": [
+                    [
+                        "uri",
+                        "~~",
+                        "^/configurations/entries/([^/]+)$"
+                    ],
+                    [
+                        "http_x_okapi_tenant",
+                        "~~",
+                        ".*"
+                    ]
+                ],
+                "uri": "/configurations/entries/*",
+                "name": "ee5f4fa36b89e930c5cf74c7d275ec4396f45d43",
+                "labels": {
+                    "interface": "configuration-2.0",
+                    "module": "mod-configuration-5.14.0-SNAPSHOT.2030"
+                },
+                "create_time": 1792574219
+            },
+            "key": "/apisix/routes/ee5f4fa36b89e930c5cf74c7d275ec4396f45d43",
+            "createdIndex": 75,
+            "modifiedIndex": 75
+        }
+    ],
+    "total": 1
+}
