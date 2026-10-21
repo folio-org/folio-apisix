@@ -254,12 +254,12 @@ class MigratorTest(unittest.TestCase):
         def preflight(self):
             pass
 
-        def get(self, kind, eid):
-            return self.store.get((kind, eid))
+        def get(self, entity_type, eid):
+            return self.store.get((entity_type, eid))
 
-        def put(self, kind, eid, payload):
-            self.store[(kind, eid)] = payload
-            self.puts.append((kind, eid))
+        def put(self, entity_type, eid, payload):
+            self.store[(entity_type, eid)] = payload
+            self.puts.append((entity_type, eid))
 
     def run_migration(self, services, routes, apisix=None, **kwargs):
         apisix = apisix or self.FakeApisix()

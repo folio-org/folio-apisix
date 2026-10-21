@@ -31,7 +31,7 @@ LOG = logging.getLogger("kong2apisix")
 
 PAGE_SIZE = 500
 HTTP_TIMEOUT = 30
-KINDS = ("services", "routes")
+ENTITY_TYPES = ("services", "routes")
 DEFAULT_SKIP_ROUTES = "version,CORS"
 SUPPORTED_KONG_SERVICE_PROTOCOLS = ("http", "https")
 APISIX_MAX_ID_LENGTH = 64
@@ -106,17 +106,17 @@ class ApisixClient(ApiClient):
     def preflight(self):
         self.request("GET", "/apisix/admin/routes?page_size=1")
 
-    def get(self, kind, eid):
+    def get(self, entity_type, eid):
         try:
-            body = self.request("GET", f"/apisix/admin/{kind}/{urllib.parse.quote(eid, safe='')}")
+            body = self.request("GET", f"/apisix/admin/{entity_type}/{urllib.parse.quote(eid, safe='')}")
         except ApiError as e:
             if e.status == 404:
                 return None
             raise
         return body["value"] if isinstance(body, dict) and isinstance(body.get("value"), dict) else body
 
-    def put(self, kind, eid, payload):
-        self.request("PUT", f"/apisix/admin/{kind}/{urllib.parse.quote(eid, safe='')}", payload)
+    def put(self, entity_type, eid, payload):
+        self.request("PUT", f"/apisix/admin/{entity_type}/{urllib.parse.quote(eid, safe='')}", payload)
 
 
 # --------------------------------------------------------------------------
@@ -366,16 +366,16 @@ class Report:
     OUTCOMES = ("migrated", "updated", "skipped", "failed", "excluded")
 
     def __init__(self):
-        self.counts = {k: dict.fromkeys(self.OUTCOMES, 0) for k in KINDS}
+        self.counts = {k: dict.fromkeys(self.OUTCOMES, 0) for k in ENTITY_TYPES}
         self.failures = []
 
-    def record(self, kind, outcome):
-        self.counts[kind][outcome] += 1
+    def record(self, entity_type, outcome):
+        self.counts[entity_type][outcome] += 1
 
-    def fail(self, kind, kong_entity, reason):
-        self.record(kind, "failed")
-        self.failures.append((kind, _kong_display_name(kong_entity), kong_entity.get("id"), reason))
-        LOG.error("%s '%s' (%s) failed: %s", kind, _kong_display_name(kong_entity), kong_entity.get("id"), reason)
+    def fail(self, entity_type, kong_entity, reason):
+        self.record(entity_type, "failed")
+        self.failures.append((entity_type, _kong_display_name(kong_entity), kong_entity.get("id"), reason))
+        LOG.error("%s '%s' (%s) failed: %s", entity_type, _kong_display_name(kong_entity), kong_entity.get("id"), reason)
 
     @property
     def has_failures(self):
@@ -383,14 +383,14 @@ class Report:
 
     def log_summary(self, dry_run):
         LOG.info("Migration summary%s", " (DRY RUN - nothing was written; 'migrated' = would be created)" if dry_run else "")
-        for kind in KINDS:
-            c = self.counts[kind]
+        for entity_type in ENTITY_TYPES:
+            c = self.counts[entity_type]
             LOG.info("  %-9s migrated=%d updated=%d skipped(already exists)=%d failed=%d excluded(by config)=%d",
-                     kind + ":", c["migrated"], c["updated"], c["skipped"], c["failed"], c["excluded"])
+                     entity_type + ":", c["migrated"], c["updated"], c["skipped"], c["failed"], c["excluded"])
         if self.failures:
             LOG.info("Failed entities (%d):", len(self.failures))
-            for kind, name, eid, reason in self.failures:
-                LOG.info("  %s '%s' (%s): %s", kind, name, eid, reason)
+            for entity_type, name, eid, reason in self.failures:
+                LOG.info("  %s '%s' (%s): %s", entity_type, name, eid, reason)
 
 
 # --------------------------------------------------------------------------
@@ -404,7 +404,7 @@ class Migrator:
         self.dry_run = dry_run
         self.skip_routes = set(skip_routes)
         self.report = Report()
-        self.failed = {k: set() for k in KINDS}
+        self.failed = {k: set() for k in ENTITY_TYPES}
         self.kong_services_by_id = {}
 
     def run(self):
@@ -463,31 +463,31 @@ class Migrator:
         kong_service = self.kong_services_by_id.get(kong_service_id)
         return _kong_display_name(kong_service) if kong_service else kong_service_id
 
-    def _migrate(self, kind, kong_entity, build_apisix_entity):
+    def _migrate(self, entity_type, kong_entity, build_apisix_entity):
         try:
-            self._apply(kind, kong_entity, build_apisix_entity())
+            self._apply(entity_type, kong_entity, build_apisix_entity())
         except (TranslationError, ApiError) as e:
-            self.failed[kind].add(kong_entity["id"])
-            self.report.fail(kind, kong_entity, str(e))
-            self._emit(kind, kong_entity, "error", reason=str(e))
+            self.failed[entity_type].add(kong_entity["id"])
+            self.report.fail(entity_type, kong_entity, str(e))
+            self._emit(entity_type, kong_entity, "error", reason=str(e))
 
-    def _apply(self, kind, kong_entity, apisix_entity):
-        existing = self.apisix.get(kind, apisix_entity["id"])
+    def _apply(self, entity_type, kong_entity, apisix_entity):
+        existing = self.apisix.get(entity_type, apisix_entity["id"])
         changed = None if existing is None else diff_paths(apisix_entity, existing)
         action = "create" if existing is None else "update" if changed else "unchanged"
-        LOG.debug("%s '%s': %s", kind, _kong_display_name(kong_entity), action)
+        LOG.debug("%s '%s': %s", entity_type, _kong_display_name(kong_entity), action)
         if self.dry_run:
-            self._emit(kind, kong_entity, action, apisix_id=apisix_entity["id"], changed=changed)
+            self._emit(entity_type, kong_entity, action, apisix_id=apisix_entity["id"], changed=changed)
         elif action != "unchanged":
-            self.apisix.put(kind, apisix_entity["id"], apisix_entity)
-        self.report.record(kind, {"create": "migrated", "update": "updated", "unchanged": "skipped"}[action])
+            self.apisix.put(entity_type, apisix_entity["id"], apisix_entity)
+        self.report.record(entity_type, {"create": "migrated", "update": "updated", "unchanged": "skipped"}[action])
 
-    def _emit(self, kind, kong_entity, action, apisix_id=None, **extra):
+    def _emit(self, entity_type, kong_entity, action, apisix_id=None, **extra):
         if not self.dry_run:
             return
-        record = {"kind": kind, "id": apisix_id or kong_entity.get("id"), "kong_id": kong_entity.get("id"),
+        record = {"type": entity_type, "id": apisix_id or kong_entity.get("id"), "kong_id": kong_entity.get("id"),
                   "name": _kong_display_name(kong_entity), "action": action}
-        if kind == "routes":
+        if entity_type == "routes":
             record["service"] = self._service_name((kong_entity.get("service") or {}).get("id"))
         record.update({k: v for k, v in extra.items() if v is not None})
         print(json.dumps(record, sort_keys=True), flush=True)
