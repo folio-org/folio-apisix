@@ -33,7 +33,7 @@ def service(**overrides):
     return base
 
 
-class TranslateExpressionTest(unittest.TestCase):
+class KongExpressionToApisixMatchTest(unittest.TestCase):
     def test_static_path(self):
         r = mr.kong_expression_to_apisix_match(f'(http.path == "/users" && http.method == "GET" && {TENANT_ANY})')
         self.assertEqual({"uri": "/users", "methods": ["GET"], "vars": [["http_x_okapi_tenant", "~~", ".*"]]}, r)
