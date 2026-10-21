@@ -35,54 +35,54 @@ def service(**overrides):
 
 class TranslateExpressionTest(unittest.TestCase):
     def test_static_path(self):
-        r = mr.translate_expression(f'(http.path == "/users" && http.method == "GET" && {TENANT_ANY})')
+        r = mr.kong_expression_to_apisix_match(f'(http.path == "/users" && http.method == "GET" && {TENANT_ANY})')
         self.assertEqual({"uri": "/users", "methods": ["GET"], "vars": [["http_x_okapi_tenant", "~~", ".*"]]}, r)
 
     def test_pattern_path_uses_prefix_wildcard_and_regex_var(self):
-        r = mr.translate_expression('(http.path ~ "^/users/([^/]+)/roles$" && http.method == "GET")')
+        r = mr.kong_expression_to_apisix_match('(http.path ~ "^/users/([^/]+)/roles$" && http.method == "GET")')
         self.assertEqual("/users/*", r["uri"])
         self.assertEqual([["uri", "~~", "^/users/([^/]+)/roles$"]], r["vars"])
 
     def test_regex_prefix_derivation(self):
-        self.assertEqual("/a/b*", mr.regex_to_uri("^/a/b(.*)$"))
-        self.assertEqual("/*", mr.regex_to_uri("^(.*)$"))
-        self.assertEqual("/*", mr.regex_to_uri("^/([^/]+)$"))
-        self.assertEqual("/a*", mr.regex_to_uri("^/ab*$"))
-        self.assertEqual("/*", mr.regex_to_uri("/a/(.*)$"))
-        self.assertEqual("/*", mr.regex_to_uri("^/a|/b$"))
+        self.assertEqual("/a/b*", mr.kong_path_regex_to_apisix_uri("^/a/b(.*)$"))
+        self.assertEqual("/*", mr.kong_path_regex_to_apisix_uri("^(.*)$"))
+        self.assertEqual("/*", mr.kong_path_regex_to_apisix_uri("^/([^/]+)$"))
+        self.assertEqual("/a*", mr.kong_path_regex_to_apisix_uri("^/ab*$"))
+        self.assertEqual("/*", mr.kong_path_regex_to_apisix_uri("/a/(.*)$"))
+        self.assertEqual("/*", mr.kong_path_regex_to_apisix_uri("^/a|/b$"))
 
     def test_multiple_methods_become_methods_list(self):
-        r = mr.translate_expression('(http.path == "/x" && (http.method == "GET" || http.method == "POST"))')
+        r = mr.kong_expression_to_apisix_match('(http.path == "/x" && (http.method == "GET" || http.method == "POST"))')
         self.assertEqual(["GET", "POST"], r["methods"])
         self.assertEqual([], r["vars"])
 
     def test_all_methods(self):
         methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]
         alts = " || ".join(f'http.method == "{m}"' for m in methods)
-        self.assertEqual(methods, mr.translate_expression(f'(http.path == "/x" && ({alts}))')["methods"])
+        self.assertEqual(methods, mr.kong_expression_to_apisix_match(f'(http.path == "/x" && ({alts}))')["methods"])
 
     def test_tenant_list_becomes_in_condition(self):
-        r = mr.translate_expression('(http.path == "/x" && http.method == "GET" && '
+        r = mr.kong_expression_to_apisix_match('(http.path == "/x" && http.method == "GET" && '
                                     '(http.headers.x_okapi_tenant == "t1" || http.headers.x_okapi_tenant == "t2"))')
         self.assertEqual([["http_x_okapi_tenant", "in", ["t1", "t2"]]], r["vars"])
 
     def test_single_tenant_is_still_a_list(self):
-        r = mr.translate_expression('(http.path == "/x" && http.method == "GET" && '
+        r = mr.kong_expression_to_apisix_match('(http.path == "/x" && http.method == "GET" && '
                                     '(http.headers.x_okapi_tenant == "t1"))')
         self.assertEqual([["http_x_okapi_tenant", "in", ["t1"]]], r["vars"])
 
     def test_module_id_header_keeps_order_before_tenant(self):
-        r = mr.translate_expression(f'(http.path == "/x" && http.method == "GET" && '
+        r = mr.kong_expression_to_apisix_match(f'(http.path == "/x" && http.method == "GET" && '
                                     f'http.headers.x_okapi_module_id == "mod-a-1.0.0" && {TENANT_ANY})')
         self.assertEqual([["http_x_okapi_module_id", "==", "mod-a-1.0.0"], ["http_x_okapi_tenant", "~~", ".*"]],
                          r["vars"])
 
     def test_method_only_expression_defaults_uri(self):
-        r = mr.translate_expression('http.method == "OPTIONS"')
+        r = mr.kong_expression_to_apisix_match('http.method == "OPTIONS"')
         self.assertEqual({"uri": "/*", "methods": ["OPTIONS"], "vars": []}, r)
 
     def test_not_equals_and_quoted_escapes(self):
-        r = mr.translate_expression(r'(http.path == "/x" && http.headers.x_a != "b\"c")')
+        r = mr.kong_expression_to_apisix_match(r'(http.path == "/x" && http.headers.x_a != "b\"c")')
         self.assertEqual([["http_x_a", "~=", 'b"c']], r["vars"])
 
     def test_unsupported_expressions_fail(self):
@@ -95,12 +95,12 @@ class TranslateExpressionTest(unittest.TestCase):
                     '(http.path == "/x"',
                     'http.path == "/x" garbage'):
             with self.subTest(bad), self.assertRaises(mr.TranslationError):
-                mr.translate_expression(bad)
+                mr.kong_expression_to_apisix_match(bad)
 
 
 class TranslateServiceTest(unittest.TestCase):
     def test_service_payload_mirrors_apisix_integration_service(self):
-        p = mr.translate_service(service())
+        p = mr.kong_service_to_apisix_service(service())
         self.assertEqual({
             "id": "mod-x-1.0.0", "name": "mod-x-1.0.0",
             "upstream": {"type": "roundrobin", "scheme": "http", "pass_host": "pass", "nodes": {"mod-x:8081": 1},
@@ -108,40 +108,40 @@ class TranslateServiceTest(unittest.TestCase):
 
     def test_long_name_is_hashed(self):
         name = "m" * 70
-        self.assertEqual(hashlib.sha1(name.encode()).hexdigest(), mr.translate_service(service(name=name))["id"])
+        self.assertEqual(hashlib.sha1(name.encode()).hexdigest(), mr.kong_service_to_apisix_service(service(name=name))["id"])
 
     def test_unnamed_service_falls_back_to_kong_id(self):
-        self.assertEqual("svc-1", mr.translate_service(service(name=None))["id"])
+        self.assertEqual("svc-1", mr.kong_service_to_apisix_service(service(name=None))["id"])
 
     def test_path_becomes_proxy_rewrite(self):
-        p = mr.translate_service(service(path="/api/"))
+        p = mr.kong_service_to_apisix_service(service(path="/api/"))
         self.assertEqual({"proxy-rewrite": {"regex_uri": ["^(.*)", "/api$1"]}}, p["plugins"])
         self.assertEqual({"proxy-rewrite": {"regex_uri": ["^(.*)", "/api$1"]}},
-                         mr.translate_service(service(path="/api"))["plugins"])
+                         mr.kong_service_to_apisix_service(service(path="/api"))["plugins"])
 
     def test_root_or_empty_path_has_no_plugin(self):
         for path in (None, "", "/"):
-            self.assertNotIn("plugins", mr.translate_service(service(path=path)))
+            self.assertNotIn("plugins", mr.kong_service_to_apisix_service(service(path=path)))
 
     def test_partial_timeouts_fill_with_default_and_none_omits(self):
-        p = mr.translate_service(service(connect_timeout=None, write_timeout=None, read_timeout=1500))
+        p = mr.kong_service_to_apisix_service(service(connect_timeout=None, write_timeout=None, read_timeout=1500))
         self.assertEqual({"connect": 60.0, "send": 60.0, "read": 1.5}, p["upstream"]["timeout"])
-        none = mr.translate_service(service(connect_timeout=None, write_timeout=None, read_timeout=None))
+        none = mr.kong_service_to_apisix_service(service(connect_timeout=None, write_timeout=None, read_timeout=None))
         self.assertNotIn("timeout", none["upstream"])
 
     def test_https_default_port_and_unsupported_protocol(self):
-        self.assertEqual({"mod-x:443": 1}, mr.translate_service(service(protocol="https", port=None))["upstream"]["nodes"])
+        self.assertEqual({"mod-x:443": 1}, mr.kong_service_to_apisix_service(service(protocol="https", port=None))["upstream"]["nodes"])
         with self.assertRaises(mr.TranslationError):
-            mr.translate_service(service(protocol="grpc"))
+            mr.kong_service_to_apisix_service(service(protocol="grpc"))
 
     def test_invalid_id_fails(self):
         with self.assertRaises(mr.TranslationError):
-            mr.translate_service(service(name="bad name"))
+            mr.kong_service_to_apisix_service(service(name="bad name"))
 
 
 class TranslateRouteTest(unittest.TestCase):
     def test_static_route_payload_mirrors_apisix_integration_route(self):
-        p = mr.translate_route(route(f'(http.path == "/users" && http.method == "GET" && {TENANT_ANY})'), service())
+        p = mr.kong_route_to_apisix_route(route(f'(http.path == "/users" && http.method == "GET" && {TENANT_ANY})'), service())
         self.assertEqual({
             "id": "a" * 40, "name": "a" * 40, "uri": "/users", "status": 1, "priority": 1, "methods": ["GET"],
             "vars": [["http_x_okapi_tenant", "~~", ".*"]],
@@ -149,24 +149,24 @@ class TranslateRouteTest(unittest.TestCase):
         self.assertNotIn("uris", p)
 
     def test_platform_scope_label(self):
-        p = mr.translate_route(route('(http.path == "/x" && http.method == "GET")',
-                                     tags=("mod-x-1.0.0", "x-1.0", mr.PLATFORM_SCOPE_TAG)), service())
+        p = mr.kong_route_to_apisix_route(route('(http.path == "/x" && http.method == "GET")',
+                                     tags=("mod-x-1.0.0", "x-1.0", mr.KONG_PLATFORM_SCOPE_TAG)), service())
         self.assertEqual({"module": "mod-x-1.0.0", "interface": "x-1.0", "application-scope": "platform"},
                          p["labels"])
 
     def test_module_label_from_service_name(self):
-        p = mr.translate_route(route('http.method == "GET"', tags=("x-1.0", "mod-x-1.0.0")), service())
+        p = mr.kong_route_to_apisix_route(route('http.method == "GET"', tags=("x-1.0", "mod-x-1.0.0")), service())
         self.assertEqual("mod-x-1.0.0", p["labels"]["module"])
         self.assertEqual("x-1.0", p["labels"]["interface"])
 
     def test_route_requires_expression_and_name(self):
         with self.assertRaises(mr.TranslationError):
-            mr.translate_route(dict(route("x"), expression=None), service())
+            mr.kong_route_to_apisix_route(dict(route("x"), expression=None), service())
         with self.assertRaises(mr.TranslationError):
-            mr.translate_route(dict(route('http.method == "GET"'), name=None), service())
+            mr.kong_route_to_apisix_route(dict(route('http.method == "GET"'), name=None), service())
 
     def test_priority_is_passed_through(self):
-        self.assertEqual(0, mr.translate_route(route('http.method == "GET"', priority=0), service())["priority"])
+        self.assertEqual(0, mr.kong_route_to_apisix_route(route('http.method == "GET"', priority=0), service())["priority"])
 
 
 def _load_list(path, key):
@@ -199,12 +199,12 @@ class SampleDataTest(unittest.TestCase):
         self.expected_route = _without_times(apisix_routes[0]["value"])
         self.expected_service = _without_times(apisix_services[0]["value"])
         self.assertEqual(self.kong_route["name"], self.expected_route["id"])
-        self.assertEqual(mr.apisix_service_id(self.kong_service), self.expected_service["id"])
+        self.assertEqual(mr.kong_service_to_apisix_service_id(self.kong_service), self.expected_service["id"])
         self.assertEqual(self.expected_service["id"], self.expected_route["service_id"])
 
     def test_route_equals_existing_apisix_route(self):
-        actual = mr.translate_route(self.kong_route, self.kong_service)
-        actual["service_id"] = mr.apisix_service_id(self.kong_service)
+        actual = mr.kong_route_to_apisix_route(self.kong_route, self.kong_service)
+        actual["service_id"] = mr.kong_service_to_apisix_service_id(self.kong_service)
         self.assertEqual(self.expected_route, actual)
 
     def test_migration_creates_apisix_route_with_kong_route_name_as_id_and_name(self):
@@ -228,7 +228,7 @@ class SampleDataTest(unittest.TestCase):
         expected["upstream"]["timeout"] = {"connect": k["connect_timeout"] / 1000.0,
                                            "send": k["write_timeout"] / 1000.0,
                                            "read": k["read_timeout"] / 1000.0}
-        self.assertEqual(expected, mr.translate_service(k))
+        self.assertEqual(expected, mr.kong_service_to_apisix_service(k))
 
     def test_migrated_route_points_at_migrated_service(self):
         apisix = MigratorTest.FakeApisix()

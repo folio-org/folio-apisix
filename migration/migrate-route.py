@@ -33,13 +33,13 @@ PAGE_SIZE = 500
 HTTP_TIMEOUT = 30
 KINDS = ("services", "routes")
 DEFAULT_SKIP_ROUTES = "version,CORS"
-SERVICE_PROTOCOLS = ("http", "https")
-MAX_ID_LENGTH = 64
-DEFAULT_TIMEOUT_SECONDS = 60.0
-PLATFORM_SCOPE_TAG = "application-scope:platform"
-TENANT_FIELD = "http.headers.x_okapi_tenant"
-_ID_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
-_LABEL_VALUE_RE = re.compile(r"^\S{1,256}$")
+SUPPORTED_KONG_SERVICE_PROTOCOLS = ("http", "https")
+APISIX_MAX_ID_LENGTH = 64
+APISIX_DEFAULT_TIMEOUT_SECONDS = 60.0
+KONG_PLATFORM_SCOPE_TAG = "application-scope:platform"
+KONG_TENANT_FIELD = "http.headers.x_okapi_tenant"
+_APISIX_ID_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_APISIX_LABEL_VALUE_RE = re.compile(r"^\S{1,256}$")
 
 
 class TranslationError(Exception):
@@ -126,27 +126,27 @@ class ApisixClient(ApiClient):
 # One condition: <field> <op> <string>, where the string is "..." or a raw r#"..."#.
 _CONDITION_RE = re.compile(
     r'\s*([A-Za-z][A-Za-z0-9_.\-]*)\s*(==|!=|~)\s*(?:r(#*)"(.*?)"\3|"((?:[^"\\]|\\.)*)")')
-_OPERATORS = {"==": "==", "!=": "~=", "~": "~~"}
+_KONG_TO_APISIX_OPERATORS = {"==": "==", "!=": "~=", "~": "~~"}
 _REGEX_META = frozenset("([{\\.*+?|$)")
 
 
-def _display(entity):
-    return entity.get("name") or entity.get("id")
+def _kong_display_name(kong_entity):
+    return kong_entity.get("name") or kong_entity.get("id")
 
 
-def _map_field(field):
-    if field == "http.path":
+def kong_field_to_apisix_var(kong_field):
+    if kong_field == "http.path":
         return "uri"  # `request_uri` would include the query string
-    if field == "http.method":
+    if kong_field == "http.method":
         return "request_method"
-    if field == "http.host":
+    if kong_field == "http.host":
         return "host"
-    if field.startswith("http.headers."):
-        return "http_" + field[len("http.headers."):].lower().replace("-", "_")
-    raise TranslationError(f"unsupported field '{field}'")
+    if kong_field.startswith("http.headers."):
+        return "http_" + kong_field[len("http.headers."):].lower().replace("-", "_")
+    raise TranslationError(f"unsupported field '{kong_field}'")
 
 
-class _ExpressionParser:
+class _KongExpressionParser:
     """Kong expression -> list of clauses; clauses are AND-ed, a clause is a list of OR-ed conditions.
 
     A condition is (field, operator, value). Only `&&` of conditions and parenthesised `||` groups of single
@@ -209,27 +209,28 @@ class _ExpressionParser:
         m = _CONDITION_RE.match(self.text, self.pos)
         if not m:
             self._fail()
-        field, op, _, raw, quoted = m.groups()
+        kong_field, kong_operator, _, raw_value, quoted_value = m.groups()
         self.pos = m.end()
-        return field, op, raw if raw is not None else re.sub(r'\\(["\\])', r"\1", quoted)
+        kong_value = raw_value if raw_value is not None else re.sub(r'\\(["\\])', r"\1", quoted_value)
+        return kong_field, kong_operator, kong_value
 
 
-def regex_to_uri(regex):
-    """Longest literal prefix of an anchored path regex as a prefix-wildcard `uri` (`/*` when none).
+def kong_path_regex_to_apisix_uri(kong_path_regex):
+    """Longest literal prefix of an anchored Kong path regex as an APISIX prefix-wildcard `uri` (`/*` when none).
 
     Mirrors ApisixRouteFactory.buildUri: the regex kept in `vars` narrows what the wildcard matches.
     """
-    if not regex.startswith("^") or "|" in regex:
+    if not kong_path_regex.startswith("^") or "|" in kong_path_regex:
         return "/*"
-    body = regex[1:]
-    end = next((i for i, ch in enumerate(body) if ch in _REGEX_META), len(body))
-    prefix = body[:end]
-    if end < len(body) and body[end] in "*+?{":
-        prefix = prefix[:-1]  # the quantifier applies to the last literal character
-    return prefix + "*" if prefix.startswith("/") else "/*"
+    body = kong_path_regex[1:]
+    literal_end = next((i for i, ch in enumerate(body) if ch in _REGEX_META), len(body))
+    literal_prefix = body[:literal_end]
+    if literal_end < len(body) and body[literal_end] in "*+?{":
+        literal_prefix = literal_prefix[:-1]  # the quantifier applies to the last literal character
+    return literal_prefix + "*" if literal_prefix.startswith("/") else "/*"
 
 
-def translate_expression(expression):
+def kong_expression_to_apisix_match(kong_expression):
     """Kong route expression -> {"uri", "methods", "vars"} in the shape ApisixRouteFactory produces.
 
     `http.path == X` -> exact `uri`; `http.path ~ R` -> prefix-wildcard `uri` + `["uri","~~",R]`;
@@ -237,103 +238,111 @@ def translate_expression(expression):
     (the tenant list ApisixRouteTenantService manages). Anything else raises TranslationError, so a route is
     never created with a looser match than the original.
     """
-    uri, methods, variables = None, None, []
-    for clause in _ExpressionParser(expression.strip()).parse():
-        field, op, value = clause[0]
-        if len(clause) > 1:
-            if any(c[0] != field or c[1] != "==" for c in clause):
+    apisix_uri, apisix_methods, apisix_vars = None, None, []
+    for kong_clause in _KongExpressionParser(kong_expression.strip()).parse():
+        kong_field, kong_operator, kong_value = kong_clause[0]
+        if len(kong_clause) > 1:
+            if any(c[0] != kong_field or c[1] != "==" for c in kong_clause):
                 raise TranslationError("unsupported '||' group: only '==' alternatives on a single field")
-            values = list(dict.fromkeys(c[2] for c in clause))
-            if field == "http.method" and methods is None:
-                methods = values
+            kong_values = list(dict.fromkeys(c[2] for c in kong_clause))
+            if kong_field == "http.method" and apisix_methods is None:
+                apisix_methods = kong_values
             else:
-                variables.append([_map_field(field), "in", values])
-        elif field == "http.path" and op == "==" and uri is None and value.startswith("/") and "*" not in value:
-            uri = value
-        elif field == "http.path" and op == "~" and uri is None:
-            uri = regex_to_uri(value)
-            variables.append(["uri", _OPERATORS[op], value])
-        elif field == "http.method" and op == "==" and methods is None:
-            methods = [value]
-        elif field == TENANT_FIELD and op == "==":
-            variables.append([_map_field(field), "in", [value]])
+                apisix_vars.append([kong_field_to_apisix_var(kong_field), "in", kong_values])
+        elif (kong_field == "http.path" and kong_operator == "==" and apisix_uri is None
+              and kong_value.startswith("/") and "*" not in kong_value):
+            apisix_uri = kong_value
+        elif kong_field == "http.path" and kong_operator == "~" and apisix_uri is None:
+            apisix_uri = kong_path_regex_to_apisix_uri(kong_value)
+            apisix_vars.append(["uri", _KONG_TO_APISIX_OPERATORS[kong_operator], kong_value])
+        elif kong_field == "http.method" and kong_operator == "==" and apisix_methods is None:
+            apisix_methods = [kong_value]
+        elif kong_field == KONG_TENANT_FIELD and kong_operator == "==":
+            apisix_vars.append([kong_field_to_apisix_var(kong_field), "in", [kong_value]])
         else:
-            variables.append([_map_field(field), _OPERATORS[op], value])
-    return {"uri": uri or "/*", "methods": methods, "vars": variables}
+            apisix_vars.append([kong_field_to_apisix_var(kong_field), _KONG_TO_APISIX_OPERATORS[kong_operator],
+                                kong_value])
+    return {"uri": apisix_uri or "/*", "methods": apisix_methods, "vars": apisix_vars}
 
 
-def _checked_id(value, what):
-    if not _ID_RE.match(value):
+def _require_valid_apisix_id(value, what):
+    if not _APISIX_ID_RE.match(value):
         raise TranslationError(f"{what} '{value}' is not a valid APISIX id (1-64 chars of [a-zA-Z0-9_.-])")
     return value
 
 
-def apisix_service_id(service):
+def kong_service_to_apisix_service_id(kong_service):
     """Same rule as ApisixGatewayService.serviceIdOf: the module id, or its sha1 when longer than 64 chars."""
-    name = service.get("name")
-    if not name:
-        return _checked_id(service["id"], "service id")
-    return _checked_id(name if len(name) <= MAX_ID_LENGTH else hashlib.sha1(name.encode("utf-8")).hexdigest(),
-                       "service name")
+    kong_name = kong_service.get("name")
+    if not kong_name:
+        return _require_valid_apisix_id(kong_service["id"], "service id")
+    if len(kong_name) <= APISIX_MAX_ID_LENGTH:
+        return _require_valid_apisix_id(kong_name, "service name")
+    return _require_valid_apisix_id(hashlib.sha1(kong_name.encode("utf-8")).hexdigest(), "service name")
 
 
-def translate_service(service):
-    protocol = service.get("protocol") or "http"
-    if protocol not in SERVICE_PROTOCOLS:
-        raise TranslationError(f"unsupported protocol '{protocol}'")
-    if not service.get("host"):
+def kong_service_to_apisix_service(kong_service):
+    kong_protocol = kong_service.get("protocol") or "http"
+    if kong_protocol not in SUPPORTED_KONG_SERVICE_PROTOCOLS:
+        raise TranslationError(f"unsupported protocol '{kong_protocol}'")
+    if not kong_service.get("host"):
         raise TranslationError("service has no host")
-    port = service.get("port") or (443 if protocol == "https" else 80)
-    upstream = {"type": "roundrobin", "scheme": protocol,
-                "pass_host": "pass",  # as folio-integration-apisix: the client's Host header is forwarded
-                "nodes": {f"{service['host']}:{port}": 1}}
-    if service.get("retries") is not None:
-        upstream["retries"] = service["retries"]
-    timeouts = {dst: service.get(src) for src, dst in
-                (("connect_timeout", "connect"), ("write_timeout", "send"), ("read_timeout", "read"))}
-    if any(v is not None for v in timeouts.values()):
-        # APISIX requires all three fields once `timeout` is present
-        upstream["timeout"] = {k: DEFAULT_TIMEOUT_SECONDS if v is None else v / 1000.0 for k, v in timeouts.items()}
-    payload = {"id": apisix_service_id(service), "name": _display(service), "upstream": upstream}
-    path = service.get("path")
-    if path not in (None, "", "/"):
+    kong_port = kong_service.get("port") or (443 if kong_protocol == "https" else 80)
+    apisix_upstream = {"type": "roundrobin", "scheme": kong_protocol,
+                       "pass_host": "pass",  # as folio-integration-apisix: the client's Host header is forwarded
+                       "nodes": {f"{kong_service['host']}:{kong_port}": 1}}
+    if kong_service.get("retries") is not None:
+        apisix_upstream["retries"] = kong_service["retries"]
+    kong_timeouts_ms = {apisix_key: kong_service.get(kong_key) for kong_key, apisix_key in
+                        (("connect_timeout", "connect"), ("write_timeout", "send"), ("read_timeout", "read"))}
+    if any(ms is not None for ms in kong_timeouts_ms.values()):
+        # APISIX requires all three fields (in seconds) once `timeout` is present
+        apisix_upstream["timeout"] = {key: APISIX_DEFAULT_TIMEOUT_SECONDS if ms is None else ms / 1000.0
+                                      for key, ms in kong_timeouts_ms.items()}
+    apisix_service = {"id": kong_service_to_apisix_service_id(kong_service),
+                      "name": _kong_display_name(kong_service), "upstream": apisix_upstream}
+    kong_path = kong_service.get("path")
+    if kong_path not in (None, "", "/"):
         # APISIX nodes cannot carry a path; prefix it with a service-level proxy-rewrite
-        prefix = path[:-1] if path.endswith("/") else path
-        payload["plugins"] = {"proxy-rewrite": {"regex_uri": ["^(.*)", prefix + "$1"]}}
-    return payload
+        apisix_path_prefix = kong_path[:-1] if kong_path.endswith("/") else kong_path
+        apisix_service["plugins"] = {"proxy-rewrite": {"regex_uri": ["^(.*)", apisix_path_prefix + "$1"]}}
+    return apisix_service
 
 
-def route_labels(route, service):
-    tags = [t for t in route.get("tags") or [] if t != PLATFORM_SCOPE_TAG]
-    module = (service or {}).get("name") or (tags[0] if tags else None)
-    interface = next((t for t in tags if t != module), None)
-    labels = {k: v for k, v in (("module", module), ("interface", interface)) if v}
-    if PLATFORM_SCOPE_TAG in (route.get("tags") or []):
-        labels["application-scope"] = "platform"
-    for key, value in labels.items():
-        if not _LABEL_VALUE_RE.match(value):
+def kong_route_to_apisix_labels(kong_route, kong_service):
+    """Kong tags [moduleId, interfaceId, "application-scope:platform"?] -> APISIX labels."""
+    kong_tags = kong_route.get("tags") or []
+    kong_module_and_interface_tags = [t for t in kong_tags if t != KONG_PLATFORM_SCOPE_TAG]
+    module_id = (kong_service or {}).get("name") or (
+        kong_module_and_interface_tags[0] if kong_module_and_interface_tags else None)
+    interface_id = next((t for t in kong_module_and_interface_tags if t != module_id), None)
+    apisix_labels = {k: v for k, v in (("module", module_id), ("interface", interface_id)) if v}
+    if KONG_PLATFORM_SCOPE_TAG in kong_tags:
+        apisix_labels["application-scope"] = "platform"
+    for key, value in apisix_labels.items():
+        if not _APISIX_LABEL_VALUE_RE.match(value):
             raise TranslationError(f"label '{key}' value {value!r} is not valid in APISIX")
-    return labels
+    return apisix_labels
 
 
-def translate_route(route, service=None):
-    if not route.get("expression"):
+def kong_route_to_apisix_route(kong_route, kong_service=None):
+    if not kong_route.get("expression"):
         raise TranslationError("only expression routes are supported")
-    if not route.get("name"):
+    if not kong_route.get("name"):
         raise TranslationError("route has no name (the name is the APISIX route id used by folio-integration-apisix)")
-    parsed = translate_expression(route["expression"])
-    route_id = _checked_id(route["name"], "route name")
-    payload = {"id": route_id, "name": route_id, "uri": parsed["uri"], "status": 1}
-    if isinstance(route.get("priority"), int):
-        payload["priority"] = route["priority"]
-    if parsed["methods"]:
-        payload["methods"] = parsed["methods"]
-    if parsed["vars"]:
-        payload["vars"] = parsed["vars"]
-    labels = route_labels(route, service)
-    if labels:
-        payload["labels"] = labels
-    return payload
+    apisix_match = kong_expression_to_apisix_match(kong_route["expression"])
+    apisix_route_id = _require_valid_apisix_id(kong_route["name"], "route name")
+    apisix_route = {"id": apisix_route_id, "name": apisix_route_id, "uri": apisix_match["uri"], "status": 1}
+    if isinstance(kong_route.get("priority"), int):
+        apisix_route["priority"] = kong_route["priority"]
+    if apisix_match["methods"]:
+        apisix_route["methods"] = apisix_match["methods"]
+    if apisix_match["vars"]:
+        apisix_route["vars"] = apisix_match["vars"]
+    apisix_labels = kong_route_to_apisix_labels(kong_route, kong_service)
+    if apisix_labels:
+        apisix_route["labels"] = apisix_labels
+    return apisix_route
 
 
 def diff_paths(desired, existing, path=""):
@@ -363,10 +372,10 @@ class Report:
     def record(self, kind, outcome):
         self.counts[kind][outcome] += 1
 
-    def fail(self, kind, entity, reason):
+    def fail(self, kind, kong_entity, reason):
         self.record(kind, "failed")
-        self.failures.append((kind, _display(entity), entity.get("id"), reason))
-        LOG.error("%s '%s' (%s) failed: %s", kind, _display(entity), entity.get("id"), reason)
+        self.failures.append((kind, _kong_display_name(kong_entity), kong_entity.get("id"), reason))
+        LOG.error("%s '%s' (%s) failed: %s", kind, _kong_display_name(kong_entity), kong_entity.get("id"), reason)
 
     @property
     def has_failures(self):
@@ -396,7 +405,7 @@ class Migrator:
         self.skip_routes = set(skip_routes)
         self.report = Report()
         self.failed = {k: set() for k in KINDS}
-        self.services_by_id = {}
+        self.kong_services_by_id = {}
 
     def run(self):
         try:
@@ -404,79 +413,82 @@ class Migrator:
         except ApiError as e:
             raise FatalError(f"APISIX Admin API is not usable: {e}")
         try:
-            services = self.kong.list("/services")
-            routes = self.kong.list("/routes")
+            kong_services = self.kong.list("/services")
+            kong_routes = self.kong.list("/routes")
         except ApiError as e:
             raise FatalError(f"cannot read from Kong Admin API: {e}")
-        LOG.info("Read from Kong: %d services, %d routes", len(services), len(routes))
-        self.services_by_id = {s["id"]: s for s in services}
+        LOG.info("Read from Kong: %d services, %d routes", len(kong_services), len(kong_routes))
+        self.kong_services_by_id = {s["id"]: s for s in kong_services}
 
         # Services used only by skipped routes are not migrated either.
         used = lambda rs: {r["service"]["id"] for r in rs if r.get("service")}
-        skipped = [r for r in routes if r.get("name") in self.skip_routes]
-        excluded = used(skipped) - used(r for r in routes if r.get("name") not in self.skip_routes)
+        skipped_kong_routes = [r for r in kong_routes if r.get("name") in self.skip_routes]
+        excluded_kong_service_ids = used(skipped_kong_routes) - used(
+            r for r in kong_routes if r.get("name") not in self.skip_routes)
 
         LOG.info("Migrating services...")
-        for s in services:
-            if s["id"] in excluded:
+        for kong_service in kong_services:
+            if kong_service["id"] in excluded_kong_service_ids:
                 self.report.record("services", "excluded")
             else:
-                self._migrate("services", s, lambda s=s: translate_service(s))
+                self._migrate("services", kong_service,
+                              lambda s=kong_service: kong_service_to_apisix_service(s))
 
         LOG.info("Migrating routes...")
-        for r in routes:
-            if r.get("name") in self.skip_routes:
-                LOG.info("Skipping route '%s' (configured skip list)", r.get("name"))
+        for kong_route in kong_routes:
+            if kong_route.get("name") in self.skip_routes:
+                LOG.info("Skipping route '%s' (configured skip list)", kong_route.get("name"))
                 self.report.record("routes", "excluded")
             else:
-                self._migrate("routes", r, lambda r=r: self._route(r))
+                self._migrate("routes", kong_route, lambda r=kong_route: self._build_apisix_route(r))
 
         self.report.log_summary(self.dry_run)
         return self.report
 
-    def _route(self, route):
-        service_id = (route.get("service") or {}).get("id")
-        if not service_id:
+    def _build_apisix_route(self, kong_route):
+        kong_service_id = (kong_route.get("service") or {}).get("id")
+        if not kong_service_id:
             raise TranslationError("route has no service")
-        if service_id in self.failed["services"]:
-            raise TranslationError(f"dependency failed: service '{self._service_name(service_id)}' could not be migrated")
-        service = self.services_by_id.get(service_id)
-        if service is None:
-            raise TranslationError(f"service {service_id} was not returned by Kong")
-        payload = translate_route(route, service)
-        payload["service_id"] = apisix_service_id(service)
-        return payload
+        if kong_service_id in self.failed["services"]:
+            raise TranslationError(
+                f"dependency failed: service '{self._service_name(kong_service_id)}' could not be migrated")
+        kong_service = self.kong_services_by_id.get(kong_service_id)
+        if kong_service is None:
+            raise TranslationError(f"service {kong_service_id} was not returned by Kong")
+        apisix_route = kong_route_to_apisix_route(kong_route, kong_service)
+        apisix_route["service_id"] = kong_service_to_apisix_service_id(kong_service)
+        return apisix_route
 
-    def _service_name(self, service_id):
-        service = self.services_by_id.get(service_id)
-        return _display(service) if service else service_id
+    def _service_name(self, kong_service_id):
+        kong_service = self.kong_services_by_id.get(kong_service_id)
+        return _kong_display_name(kong_service) if kong_service else kong_service_id
 
-    def _migrate(self, kind, entity, build):
+    def _migrate(self, kind, kong_entity, build_apisix_entity):
         try:
-            self._apply(kind, entity, build())
+            self._apply(kind, kong_entity, build_apisix_entity())
         except (TranslationError, ApiError) as e:
-            self.failed[kind].add(entity["id"])
-            self.report.fail(kind, entity, str(e))
-            self._emit(kind, entity, "error", reason=str(e))
+            self.failed[kind].add(kong_entity["id"])
+            self.report.fail(kind, kong_entity, str(e))
+            self._emit(kind, kong_entity, "error", reason=str(e))
 
-    def _apply(self, kind, entity, payload):
-        existing = self.apisix.get(kind, payload["id"])
-        changed = None if existing is None else diff_paths(payload, existing)
+    def _apply(self, kind, kong_entity, apisix_entity):
+        existing = self.apisix.get(kind, apisix_entity["id"])
+        changed = None if existing is None else diff_paths(apisix_entity, existing)
         action = "create" if existing is None else "update" if changed else "unchanged"
-        LOG.debug("%s '%s': %s", kind, _display(entity), action)
+        LOG.debug("%s '%s': %s", kind, _kong_display_name(kong_entity), action)
         if self.dry_run:
-            self._emit(kind, entity, action, apisix_id=payload["id"], changed=changed)
+            self._emit(kind, kong_entity, action, apisix_id=apisix_entity["id"], changed=changed)
         elif action != "unchanged":
-            self.apisix.put(kind, payload["id"], payload)
+            self.apisix.put(kind, apisix_entity["id"], apisix_entity)
         self.report.record(kind, {"create": "migrated", "update": "updated", "unchanged": "skipped"}[action])
 
-    def _emit(self, kind, entity, action, apisix_id=None, **extra):
+    def _emit(self, kind, kong_entity, action, apisix_id=None, **extra):
         if not self.dry_run:
             return
-        record = {"kind": kind, "id": apisix_id or entity.get("id"), "kong_id": entity.get("id"),
-                  "name": _display(entity), "action": action}
+        record = {"kind": kind, "id": apisix_id or kong_entity.get("id"), "kong_id": kong_entity.get("id"),
+                  "name": _kong_display_name(kong_entity), "action": action}
         if kind == "routes":
-            record["service"] = self._service_name((entity.get("service") or {}).get("id"))
+            record["service"] = self._service_name((kong_entity.get("service") or {}).get("id"))
         record.update({k: v for k, v in extra.items() if v is not None})
         print(json.dumps(record, sort_keys=True), flush=True)
 
