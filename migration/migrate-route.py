@@ -5,6 +5,8 @@ Reads from the Kong Admin API and writes to the APISIX Admin API (idempotent PUT
 Entities are shaped exactly like the ones folio-integration-apisix creates, so the library can manage them
 afterwards: service id = Kong service name (module id; sha1 when longer than 64 chars), route id = Kong route
 name (sha1 of the route name), routes carry `module` / `interface` labels.
+Disabled Kong services (`enabled: false`) are migrated too; their routes get `status: 0` (APISIX services have no
+enable flag, so the routes are what keeps them switched off).
 Plugins, consumers and Kong upstreams are intentionally out of scope.
 
 Configuration (flags; the environment variables are only defaults):
@@ -332,7 +334,10 @@ def kong_route_to_apisix_route(kong_route, kong_service=None):
         raise TranslationError("route has no name (the name is the APISIX route id used by folio-integration-apisix)")
     apisix_match = kong_expression_to_apisix_match(kong_route["expression"])
     apisix_route_id = _require_valid_apisix_id(kong_route["name"], "route name")
-    apisix_route = {"id": apisix_route_id, "name": apisix_route_id, "uri": apisix_match["uri"], "status": 1}
+    # APISIX services have no enable flag; a route of a disabled Kong service is written disabled (status 0)
+    apisix_status = 0 if (kong_service or {}).get("enabled") is False else 1
+    apisix_route = {"id": apisix_route_id, "name": apisix_route_id, "uri": apisix_match["uri"],
+                    "status": apisix_status}
     if isinstance(kong_route.get("priority"), int):
         apisix_route["priority"] = kong_route["priority"]
     if apisix_match["methods"]:
@@ -457,6 +462,9 @@ class Migrator:
             raise TranslationError(f"service {kong_service_id} was not returned by Kong")
         apisix_route = kong_route_to_apisix_route(kong_route, kong_service)
         apisix_route["service_id"] = kong_service_to_apisix_service_id(kong_service)
+        if apisix_route["status"] == 0:
+            LOG.info("Route '%s' belongs to disabled Kong service '%s': migrated with status 0",
+                     _kong_display_name(kong_route), _kong_display_name(kong_service))
         return apisix_route
 
     def _service_name(self, kong_service_id):

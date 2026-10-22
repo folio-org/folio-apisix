@@ -36,6 +36,12 @@ Exit codes: `0` success, `1` at least one entity failed, `2` fatal (missing `--a
 This is a one-time cutover tool: Kong is the source of truth, so re-running it after tenants were added through
 `folio-integration-apisix` overwrites the tenant `vars` of those routes with Kong's state.
 
+## Disabled services
+
+Kong services with `enabled: false` are migrated like the others. APISIX services have no enable flag, so their routes
+are written with `status: 0` (never matched, as in Kong); routes of enabled services get `status: 1`. When the module is
+switched on, set the routes' `status` to `1` in APISIX.
+
 ## Tests
 
 ```bash

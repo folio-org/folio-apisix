@@ -107,6 +107,10 @@ class KongExpressionToApisixMatchTest(unittest.TestCase):
 
 
 class KongServiceToApisixServiceTest(unittest.TestCase):
+    def test_disabled_kong_service_converts_to_the_same_apisix_service_as_an_enabled_one(self):
+        self.assertEqual(mr.kong_service_to_apisix_service(service(enabled=True)),
+                         mr.kong_service_to_apisix_service(service(enabled=False)))
+
     def test_service_payload_mirrors_apisix_integration_service(self):
         p = mr.kong_service_to_apisix_service(service())
         self.assertEqual({
@@ -184,6 +188,20 @@ class KongRouteToApisixRouteTest(unittest.TestCase):
             "vars": [["uri", "~~", "^/groups(.*)$"], ["http_x_okapi_tenant", "in", ["tenant1", "tenant2"]]],
             "labels": {"module": "mod-x-1.0.0", "interface": "x-1.0"}},
             mr.kong_route_to_apisix_route(kong_route, kong_service))
+
+    def test_route_of_disabled_kong_service_gets_status_0_and_is_otherwise_unchanged(self):
+        kong_route = route('(http.path == "/x" && http.method == "GET")')
+        enabled = mr.kong_route_to_apisix_route(kong_route, service(enabled=True))
+        disabled = mr.kong_route_to_apisix_route(kong_route, service(enabled=False))
+        self.assertEqual(1, enabled["status"])
+        self.assertEqual(0, disabled["status"])
+        self.assertEqual({**enabled, "status": 0}, disabled)
+
+    def test_route_of_kong_service_without_enabled_flag_gets_status_1(self):
+        kong_route = route('(http.path == "/x" && http.method == "GET")')
+        self.assertNotIn("enabled", service())
+        self.assertEqual(1, mr.kong_route_to_apisix_route(kong_route, service())["status"])
+        self.assertEqual(1, mr.kong_route_to_apisix_route(kong_route)["status"])
 
     def test_priority_is_passed_through(self):
         self.assertEqual(0, mr.kong_route_to_apisix_route(route('http.method == "GET"', priority=0), service())["priority"])
@@ -310,6 +328,38 @@ class MigratorTest(unittest.TestCase):
         report, apisix = self.run_migration([service()], routes, skip_routes=["CORS"])
         self.assertEqual(1, report.counts["services"]["excluded"])
         self.assertEqual({}, apisix.store)
+
+    def test_disabled_service_and_its_route_are_migrated_with_route_status_0(self):
+        routes = [route('(http.path == "/x" && http.method == "GET")')]
+        report, apisix = self.run_migration([service(enabled=False)], routes)
+
+        self.assertFalse(report.has_failures)
+        for entity_type in ("services", "routes"):
+            self.assertEqual(1, report.counts[entity_type]["migrated"])
+            self.assertEqual(0, report.counts[entity_type]["excluded"])
+        stored_service = apisix.store[("services", "mod-x-1.0.0")]
+        stored_route = apisix.store[("routes", "a" * 40)]
+        self.assertEqual(0, stored_route["status"])
+        self.assertEqual(stored_service["id"], stored_route["service_id"])
+
+        report, _ = self.run_migration([service(enabled=False)], routes, apisix=apisix)
+        self.assertEqual(1, report.counts["services"]["skipped"])
+        self.assertEqual(1, report.counts["routes"]["skipped"])
+        self.assertEqual(2, len(apisix.puts))
+
+    def test_enabled_and_disabled_services_are_all_migrated_with_matching_route_status(self):
+        services = [service(), service(id="svc-2", name="mod-y-1.0.0", host="mod-y", enabled=False)]
+        routes = [route('(http.path == "/x" && http.method == "GET")', name="a" * 40, service="svc-1"),
+                  dict(route('(http.path == "/y" && http.method == "GET")', name="b" * 40, service="svc-2"),
+                       id="kong-uuid-2")]
+        report, apisix = self.run_migration(services, routes)
+
+        self.assertFalse(report.has_failures)
+        self.assertEqual({("services", "mod-x-1.0.0"), ("services", "mod-y-1.0.0"),
+                          ("routes", "a" * 40), ("routes", "b" * 40)}, set(apisix.store))
+        self.assertEqual(1, apisix.store[("routes", "a" * 40)]["status"])
+        self.assertEqual(0, apisix.store[("routes", "b" * 40)]["status"])
+        self.assertEqual("mod-y-1.0.0", apisix.store[("routes", "b" * 40)]["service_id"])
 
     def test_dry_run_writes_nothing(self):
         report, apisix = self.run_migration([service()], [route('http.method == "GET"')], dry_run=True)
