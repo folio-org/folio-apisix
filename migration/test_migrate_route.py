@@ -85,6 +85,14 @@ class KongExpressionToApisixMatchTest(unittest.TestCase):
         r = mr.kong_expression_to_apisix_match(r'(http.path == "/x" && http.headers.x_a != "b\"c")')
         self.assertEqual([["http_x_a", "~=", 'b"c']], r["vars"])
 
+    def test_tenant_specific_route_tenant_or_group_becomes_in_list(self):
+        r = mr.kong_expression_to_apisix_match(
+            '(http.path ~ "^/groups(.*)$" && http.method == "POST" && '
+            '(http.headers.x_okapi_tenant == "tenant1" || http.headers.x_okapi_tenant == "tenant2"))')
+        self.assertEqual({"uri": "/groups*", "methods": ["POST"],
+                          "vars": [["uri", "~~", "^/groups(.*)$"],
+                                   ["http_x_okapi_tenant", "in", ["tenant1", "tenant2"]]]}, r)
+
     def test_unsupported_expressions_fail(self):
         for bad in ('http.path == "/x" || http.method == "GET"',
                     '(http.path == "/x" && http.method == "A") || http.method == "B"',
@@ -164,6 +172,18 @@ class KongRouteToApisixRouteTest(unittest.TestCase):
             mr.kong_route_to_apisix_route(dict(route("x"), expression=None), service())
         with self.assertRaises(mr.TranslationError):
             mr.kong_route_to_apisix_route(dict(route('http.method == "GET"'), name=None), service())
+
+    def test_tenant_specific_route_converts_to_apisix_route_with_tenant_in_list(self):
+        kong_route = route('(http.path ~ "^/groups(.*)$" && http.method == "POST" && '
+                           '(http.headers.x_okapi_tenant == "tenant1" || http.headers.x_okapi_tenant == "tenant2"))',
+                           name="a" * 40, tags=("mod-x-1.0.0", "x-1.0"), priority=0)
+        kong_service = service(name="mod-x-1.0.0")
+        self.assertEqual({
+            "id": "a" * 40, "name": "a" * 40,
+            "uri": "/groups*", "status": 1, "priority": 0, "methods": ["POST"],
+            "vars": [["uri", "~~", "^/groups(.*)$"], ["http_x_okapi_tenant", "in", ["tenant1", "tenant2"]]],
+            "labels": {"module": "mod-x-1.0.0", "interface": "x-1.0"}},
+            mr.kong_route_to_apisix_route(kong_route, kong_service))
 
     def test_priority_is_passed_through(self):
         self.assertEqual(0, mr.kong_route_to_apisix_route(route('http.method == "GET"', priority=0), service())["priority"])
