@@ -1,10 +1,24 @@
 # Kong -> APISIX migration
 
 `migrate-route.py` copies **services and routes** from a live Kong Admin API to an APISIX Admin API.
-Migrated routes and services are identical to the ones `` creates for the same modules (same
+Migrated routes and services are identical to the ones `folio-integration-apisix` creates for the same modules (same
 ids, `uri`, `methods`, `vars`, `labels` and upstream), so the library can later update, delete and add tenants to them.
 The only difference is the service `retries` and `timeout`, which are copied from Kong, whereas the library leaves them
 unset unless configured.
+
+## Trillium release
+
+The script can be run within the Trillium release to move a
+Kong-based Trillium environment to APISIX. It needs nothing beyond a standard Python 3 installation (standard library
+only) and network access to both Admin APIs.
+
+Preconditions:
+
+- The Kong Admin API (source) and the APISIX Admin API (target) are reachable from the host running the script, and the
+  APISIX Admin API key is available.
+- APISIX is already started with this repository's configuration (`entrypoint.sh`), so the global rules (CORS,
+  `auth-headers-manager`, response headers) and the `version` route exist. They are provisioned by the gateway, not by
+  the migration; this is why the Kong `version` and `CORS` routes are skipped by default.
 
 ## Configuration
 
