@@ -1,0 +1,37 @@
+{
+    "data": [
+        {
+            "hosts": null,
+            "strip_path": false,
+            "regex_priority": 0,
+            "preserve_host": false,
+            "headers": null,
+            "service": {
+                "id": "7e7e4bfc-c25a-4d15-a5f4-8a24693241de"
+            },
+            "created_at": 1792525147,
+            "updated_at": 1792525147,
+            "priority": 0,
+            "expression": "(http.path ~ \"^/configurations/entries/([^/]+)$\" && http.method == \"GET\" && http.headers.x_okapi_tenant ~ r#\".*\"#)",
+            "path_handling": "v0",
+            "paths": null,
+            "id": "01476add-8ffa-4c84-9522-2a8c8f734266",
+            "response_buffering": true,
+            "sources": null,
+            "name": "ee5f4fa36b89e930c5cf74c7d275ec4396f45d43",
+            "tags": [
+                "mod-configuration-5.14.0-SNAPSHOT.2030",
+                "configuration-2.0"
+            ],
+            "protocols": [
+                "http",
+                "https"
+            ],
+            "destinations": null,
+            "snis": null,
+            "request_buffering": true,
+            "https_redirect_status_code": 426,
+            "methods": null
+        }
+    ]
+}
